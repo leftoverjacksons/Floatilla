@@ -133,7 +133,8 @@ export class Animal {
     this.phase += dt;
     const s = moving ? Math.sin(this.phase * 10) * 0.5 : 0;
     this.legs.forEach((l, i) => { l.rotation.x = (i % 2 ? s : -s); });
-    if (this.tail) this.tail.rotation.y = Math.sin(this.phase * (this.type === 'dog' ? 12 : 2)) * 0.5;
+    if (this.happy > 0) this.happy -= dt;
+    if (this.tail) this.tail.rotation.y = Math.sin(this.phase * (this.happy > 0 ? 26 : this.type === 'dog' ? 12 : 2)) * (this.happy > 0 ? 0.8 : 0.5);
     this.headMesh.rotation.y = Math.sin(this.phase * 0.5) * 0.4;
   }
 }

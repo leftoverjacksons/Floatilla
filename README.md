@@ -29,6 +29,7 @@ Open the printed URL. High quality is the default: planar water reflections, MSA
 | W / S | Throttle lever up / down (below zero = astern). Space = all stop |
 | A / D | Rudder |
 | R | Raise / furl sails |
+| V | Walk the deck / take the helm. On foot, WASD walks relative to the camera, Shift hurries, low cabin tops can be climbed, E pets animals; the boat holds course and throttle |
 | E | Interact: rescue, loot rooftop caches, crew a derelict, hail a boat |
 | X | Salvage a derelict for materials |
 | C | Workshop: crafting and boat modifications (pauses the game) |

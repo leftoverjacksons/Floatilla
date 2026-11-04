@@ -44,6 +44,11 @@ export class Environment {
     this.onThunder = null;
 
     this.sky = new Sky(); this.sky.scale.setScalar(10000); scene.add(this.sky);
+    // The analytic sun disc reaches values far beyond half-float range (65504) in HDR render
+    // targets; clamp so it cannot become Inf and poison bloom with black blocks.
+    this.sky.material.fragmentShader = this.sky.material.fragmentShader.replace(
+      'gl_FragColor = vec4( retColor, 1.0 );', 'gl_FragColor = vec4( clamp( retColor, 0.0, 60.0 ), 1.0 );');
+    this.sky.material.needsUpdate = true;
     const su = this.sky.material.uniforms;
     su.turbidity.value = 6; su.rayleigh.value = 1.6; su.mieCoefficient.value = 0.004; su.mieDirectionalG.value = 0.85;
 

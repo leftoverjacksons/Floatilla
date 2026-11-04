@@ -130,7 +130,7 @@ function buildHullGeometry(d) {
 
 /** Deck/floor surface: at height y, bounded by the hull's inner width at that height. */
 function buildDeckGeometry(d, sections, deckY) {
-  const pos = [], idx = [], uv = [];
+  const pos = [], idx = [], uv = [], profile = [];
   let rows = 0;
   for (const s of sections) {
     const y = Math.min(deckY, s.prof.top - 0.06);
@@ -143,6 +143,7 @@ function buildDeckGeometry(d, sections, deckY) {
       if (j === 0 && y >= y0) { w = x0; break; }
     }
     w = Math.max(0, w - 0.02);
+    profile.push({ z: s.z, w, y });
     pos.push(w, y, s.z, -w, y, s.z);
     uv.push(w / 1.2, s.z / 4, -w / 1.2, s.z / 4);
     rows++;
@@ -152,6 +153,7 @@ function buildDeckGeometry(d, sections, deckY) {
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
   geo.setIndex(idx); geo.computeVertexNormals();
+  geo.userData.profile = profile;
   return geo;
 }
 
@@ -242,6 +244,7 @@ function makeRig(parent, z, h, foot, cloth, deckY) {
   cyl(g, 0xb8b8b0, 0.06 + h * 0.003, h, 0, h / 2, 0, { metalness: 0.5 });
   const pivot = new THREE.Group(); pivot.position.y = 1.0; g.add(pivot);
   const boom = cyl(pivot, 0x8a8a84, 0.05, foot, 0, 0, -foot / 2); boom.rotation.x = Math.PI / 2;
+  boom.userData.noWalk = true;
   const sail = new THREE.Mesh(SAIL_GEO, M(cloth, { side: THREE.DoubleSide, roughness: 0.95 }));
   sail.castShadow = true;
   sail.scale.set(0.2, h - 1.3, foot); // y scale = luff height, z scale = foot length
@@ -318,7 +321,9 @@ export class Boat {
       const { geo, sections } = buildHullGeometry(d);
       const hull = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, side: THREE.DoubleSide }));
       hull.castShadow = true; hull.receiveShadow = true; body.add(hull);
-      const deck = new THREE.Mesh(buildDeckGeometry(d, sections, this.deckY), M(d.deckColor, { side: THREE.DoubleSide, roughness: 0.85, map: plankTexture() }));
+      const deckGeo = buildDeckGeometry(d, sections, this.deckY);
+      this.deckProfile = deckGeo.userData.profile;
+      const deck = new THREE.Mesh(deckGeo, M(d.deckColor, { side: THREE.DoubleSide, roughness: 0.85, map: plankTexture() }));
       deck.receiveShadow = true; body.add(deck);
       const mask = new THREE.Mesh(buildWaterMask(sections), WATER_MASK_MAT);
       mask.renderOrder = 0.5; mask.frustumCulled = false; body.add(mask);
@@ -459,12 +464,54 @@ export class Boat {
     const lantern = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), new THREE.MeshStandardMaterial({ color: 0xffe0a0, emissive: 0xffc060, emissiveIntensity: 0 }));
     lantern.position.y = 1.65; flagPole.add(lantern); this.lanterns.push(lantern);
 
+    this.flag.userData.noWalk = true; lantern.userData.noWalk = true;
     this.buildModules(body, zone);
     this.computeStations(zone);
+    this.computeWalkable(body);
     this.zone = zone;
   }
 
   deckSurfaceY() { return this.deckY; }
+
+  /**
+   * Walkable deck for the player on foot: the deck outline (half-width per
+   * station along the keel) plus every solid deck structure as a local AABB.
+   * Structures lower than a step (0.6 m) are platforms you can climb onto.
+   */
+  computeWalkable(body) {
+    this.obstacles = [];
+    this.root.updateMatrixWorld(true);
+    const inv = this.root.matrixWorld.clone().invert();
+    const m = new THREE.Matrix4(), box = new THREE.Box3();
+    const dy = this.deckY;
+    body.traverse((o) => {
+      if (!o.isMesh || o.userData.noWalk || o.material === WATER_MASK_MAT || !o.geometry) return;
+      if (o.geometry.type !== 'BoxGeometry' && o.geometry.type !== 'CylinderGeometry' && o.geometry.type !== 'ConeGeometry') return;
+      if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+      m.multiplyMatrices(inv, o.matrixWorld);
+      box.copy(o.geometry.boundingBox).applyMatrix4(m);
+      const sx = box.max.x - box.min.x, sz = box.max.z - box.min.z;
+      if (sx < 0.18 || sz < 0.18) return;              // masts, rails, stanchions
+      if (box.min.y > dy + 0.5 || box.max.y < dy + 0.12) return; // overhead or flush with deck
+      if (Math.abs(box.min.x) > this.B * 0.6) return;    // outboard things (outriggers, tires)
+      this.obstacles.push({ minx: box.min.x, maxx: box.max.x, minz: box.min.z, maxz: box.max.z, top: box.max.y });
+    });
+    // merge platform tops that sit on top of other obstacles (cabin roofs over walls)
+    const p = this.deckProfile.filter((s) => s.w > 0.3);
+    this.walkZ = p.length ? [p[0].z + 0.3, p[p.length - 1].z - 0.3] : [-this.L * 0.4, this.L * 0.4];
+  }
+
+  /** Deck half-width and height at local z (linear between loft stations). */
+  deckAt(z) {
+    const p = this.deckProfile;
+    if (!p || !p.length) return { w: this.B * 0.4, y: this.deckY };
+    if (z <= p[0].z) return p[0];
+    for (let i = 1; i < p.length; i++) if (z <= p[i].z) {
+      const t = (z - p[i - 1].z) / (p[i].z - p[i - 1].z || 1);
+      return { w: p[i - 1].w + (p[i].w - p[i - 1].w) * t, y: p[i - 1].y + (p[i].y - p[i - 1].y) * t };
+    }
+    return p[p.length - 1];
+  }
 
   buildRaft(body, rng) {
     const d = this.design, L = d.length, B = d.beam;
@@ -479,6 +526,7 @@ export class Boat {
       const b = cyl(body, pick(rng, [0x2e5fa3, 0x2f6f3a, 0x8a2a1a]), 0.3, 0.8, x, -0.05, z); b.rotation.x = Math.PI / 2;
     }
     this.sections = null;
+    this.deckProfile = [-0.5, -0.25, 0, 0.25, 0.5].map((t) => ({ z: t * L * 0.96, w: B * 0.48, y: d.freeboard }));
   }
 
   makeOutboard(body, offset) {
@@ -611,7 +659,7 @@ export class Boat {
   assignTasks(ctx) {
     const counts = { helm: 0, repair: 0, trim: 0, row: 0, fish: 0, lookout: 0, sleep: 0, bail: 0 };
     const night = ctx.env.night > 0.6 && ctx.env.state !== 'storm';
-    let helmTaken = this.crew.some((p) => p.isPlayer);
+    let helmTaken = this.crew.some((p) => p.isPlayer && !p.manual);
     const others = this.crew.filter((p) => !p.isPlayer);
     const needRow = this.rowingWanted;
     let fishSide = 0;
@@ -638,7 +686,7 @@ export class Boat {
       }
       p.target.copy(t);
     });
-    for (const p of this.crew) if (p.isPlayer) { p.task = this.rowingWanted && others.length === 0 ? 'row' : 'helm'; p.target.copy(this.stations.helm); }
+    for (const p of this.crew) if (p.isPlayer && !p.manual) { p.task = this.rowingWanted && others.length === 0 ? 'row' : 'helm'; p.target.copy(this.stations.helm); }
     this.taskCounts = counts;
   }
 
@@ -647,7 +695,7 @@ export class Boat {
     if (this.taskTimer <= 0) { this.taskTimer = 2.5; this.assignTasks(ctx); }
     const halfW = this.B * 0.42;
     for (const p of this.crew) {
-      if (p.jump) continue;
+      if (p.jump || p.manual) continue;
       const dx = p.target.x - p.local.x, dz = p.target.z - p.local.z;
       const dist = Math.hypot(dx, dz);
       let anim = p.task;

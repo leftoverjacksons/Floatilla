@@ -252,6 +252,8 @@ void main(){
     vec2 ruv = rc.xy / rc.w * 0.5 + 0.5;
     ruv += n.xz * (0.035 / (1.0 + camDist * 0.004));
     vec3 refl = texture2D(uRefl, clamp(ruv, 0.001, 0.999)).rgb;
+    if (any(isnan(refl)) || any(isinf(refl)) || !(abs(refl.r) < 1e5) || !(abs(refl.g) < 1e5) || !(abs(refl.b) < 1e5)) refl = uHorizon;
+    refl = min(refl, vec3(40.0));
     sky = refl;
   }
 
@@ -278,6 +280,9 @@ void main(){
 
   float alpha = mix(0.7, 0.96, smoothstep(0.0, 9.0, vDepth));
   alpha = clamp(max(alpha, fres) + foam, 0.0, 1.0);
+  // Guard the HDR pipeline: a single Inf/NaN pixel turns into black blocks once bloom spreads it.
+  if (any(isnan(col)) || any(isinf(col)) || !(abs(col.r) < 1e5) || !(abs(col.g) < 1e5) || !(abs(col.b) < 1e5)) col = vec3(0.0);
+  col = min(col, vec3(40.0));
   gl_FragColor = vec4(col, alpha);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>

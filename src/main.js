@@ -3,6 +3,7 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { mulberry32, clamp, pick } from './util.js';
 import { FloorMap, buildTerrain } from './terrain.js';
@@ -99,6 +100,17 @@ class Game {
     const rt = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples: 4 });
     this.composer = new EffectComposer(r, rt);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
+    // Safety net: replace any non-finite pixel and clamp extreme HDR values before bloom.
+    this.composer.addPass(new ShaderPass({
+      uniforms: { tDiffuse: { value: null } },
+      vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: `uniform sampler2D tDiffuse; varying vec2 vUv;
+        void main(){ vec4 c = texture2D(tDiffuse, vUv);
+          // comparison form also catches NaN/Inf on drivers that optimize isnan() away
+          bool bad = any(isnan(c.rgb)) || any(isinf(c.rgb)) || !(abs(c.r) < 1e5) || !(abs(c.g) < 1e5) || !(abs(c.b) < 1e5);
+          if (bad) c = vec4(0.0, 0.0, 0.0, 1.0);
+          gl_FragColor = vec4(min(c.rgb, vec3(48.0)), c.a); }`,
+    }));
     this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.35, 0.55, 0.92);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
@@ -213,6 +225,7 @@ class Game {
         case 'l': A.light(); break;
         case 't': A.time(); break;
         case 'k': A.save(); break;
+        case 'v': A.walk(); break;
         case 'o': A.load(); break;
         case ']': this.env.levelOffset += 5; this.ui.toast('[debug] Flood +5 m'); break;
         case '[': this.env.levelOffset -= 5; this.ui.toast('[debug] Flood −5 m'); break;
@@ -241,6 +254,7 @@ class Game {
       save: () => ui.toast(writeSave(this) ? `Saved (${this.env.timeString()}).` : 'Could not save.', 'good'),
       load: () => { if (readSave()) { ui.toast('Loading last save…'); setTimeout(requestLoadOnReload, 300); } else ui.toast('No save found.', 'warn'); },
       pause: () => { if (!ui.craftOpen) this.paused = !this.paused; },
+      walk: () => this.setOnFoot(!this.onFoot),
       help: () => this.toggleHelp(),
     };
   }
@@ -257,6 +271,7 @@ class Game {
     items.push(
       { icon: '⛵', label: pl.sailsUp ? 'Furl sails' : 'Raise sails', key: 'R', disabled: !pl.rigs.length, why: 'This boat has no mast. Build a Mast & Sail in the Workshop.', desc: 'Sails give no drive within about 35° of the wind.', run: A.sails },
       { icon: '⏹', label: 'All stop', key: 'Space', disabled: pl.throttle === 0, why: 'Throttle is already at zero.', desc: 'Throttle to zero.', run: A.stop },
+      { icon: this.onFoot ? '☸' : '🚶', label: this.onFoot ? 'Take the helm' : 'Walk the deck', key: 'V', desc: this.onFoot ? 'Back to steering.' : 'Leave the wheel and explore the boat on foot (WASD, Shift to hurry). The boat holds her course.', run: A.walk },
       { icon: '🔨', label: 'Workshop', key: 'C', desc: 'Repairs, upgrades and boatbuilding. Pauses the game.', run: A.craft },
       { icon: '⚓', label: f.mode === 'hold' ? 'Fleet: follow me' : 'Fleet: hold', key: 'G', disabled: !many, why: 'You have no other boats yet.', desc: f.mode === 'hold' ? 'Boats weigh anchor and follow your wake.' : 'All other boats drop anchor where they are.', run: A.hold },
       { icon: '🧭', label: f.detached ? 'Regroup' : 'Go alone', key: 'F', disabled: !many, why: 'You have no other boats yet.', desc: f.detached ? 'Call the floatilla to your position.' : 'Leave the floatilla anchored and scout ahead.', run: A.detach },
@@ -331,9 +346,74 @@ class Game {
     this.ui.showGameOver(reason);
   }
 
+  setOnFoot(on) {
+    const p = this.playerPerson, b = p.boat;
+    if (!b) return;
+    this.onFoot = on;
+    p.manual = on;
+    if (on) {
+      p.walkY = b.deckY;
+      this.footDist = this.footDist || 6;
+      this.boatDist = this.camCtl.dist; this.camCtl.dist = this.footDist;
+      b.rudder = 0;
+      this.ui.toast('On foot. WASD to walk, Shift to hurry. The boat holds her course and speed. V (or the wheel) to take the helm again.');
+    } else {
+      this.footDist = this.camCtl.dist; this.camCtl.dist = this.boatDist || 22;
+      b.taskTimer = 0;
+      this.ui.toast('You take the helm.');
+    }
+  }
+
+  /** Walk the player character around the deck of their boat, in camera-relative directions. */
+  walk(dt) {
+    const p = this.playerPerson, b = p.boat, k = this.keys;
+    if (!b || !b.obstacles) return;
+    b.rudder += (0 - b.rudder) * Math.min(1, dt * 3);
+    let fwd = 0, side = 0;
+    if (k.has('w') || k.has('arrowup')) fwd += 1;
+    if (k.has('s') || k.has('arrowdown')) fwd -= 1;
+    if (k.has('d') || k.has('arrowright')) side += 1;
+    if (k.has('a') || k.has('arrowleft')) side -= 1;
+    const yaw = this.camCtl.yaw;
+    const fx = -Math.sin(yaw), fz = -Math.cos(yaw), rx = -fz, rz = fx;
+    let mx = fx * fwd + rx * side, mz = fz * fwd + rz * side;
+    const len = Math.hypot(mx, mz), moving = len > 0.01;
+    const r = 0.22;
+    if (moving) {
+      mx /= len; mz /= len;
+      const ch = Math.cos(b.heading), sh = Math.sin(b.heading);
+      const lx = mx * ch - mz * sh, lz = mx * sh + mz * ch; // world -> boat-local
+      const step = (k.has('shift') ? 3.0 : 1.5) * dt;
+      let nx = p.local.x + lx * step, nz = p.local.z + lz * step;
+      nz = clamp(nz, b.walkZ[0], b.walkZ[1]);
+      const da = b.deckAt(nz);
+      nx = clamp(nx, -(da.w - 0.25), da.w - 0.25);
+      for (const o of b.obstacles) {
+        if (o.top <= p.walkY + 0.6) continue; // climbable
+        const inNew = nx > o.minx - r && nx < o.maxx + r && nz > o.minz - r && nz < o.maxz + r;
+        if (!inNew) continue;
+        const inOldX = p.local.x > o.minx - r && p.local.x < o.maxx + r;
+        const inOldZ = p.local.z > o.minz - r && p.local.z < o.maxz + r;
+        if (inOldX && inOldZ) continue; // started inside (spawned in a cabin): let them walk out
+        if (!inOldX) nx = p.local.x;
+        if (!inOldZ) nz = p.local.z;
+      }
+      p.local.x = nx; p.local.z = nz;
+      p.mesh.rotation.y = Math.atan2(lx, lz);
+    }
+    let standY = b.deckAt(p.local.z).y;
+    for (const o of b.obstacles) {
+      if (p.local.x > o.minx && p.local.x < o.maxx && p.local.z > o.minz && p.local.z < o.maxz && o.top <= p.walkY + 0.6) standY = Math.max(standY, o.top);
+    }
+    p.walkY = standY > p.walkY ? standY : Math.max(standY, p.walkY - 6 * dt);
+    p.mesh.position.set(p.local.x, p.walkY, p.local.z);
+    p.animate(dt, moving ? 'walk' : 'idle');
+  }
+
   playerControls(dt) {
     const b = this.fleet.player, k = this.keys;
     if (!b || this.ui.craftOpen) return;
+    if (this.onFoot) { if (this.playerPerson.boat === b) return this.walk(dt); this.setOnFoot(false); }
     if (k.has('w') || k.has('arrowup')) b.throttle = Math.min(1, b.throttle + dt * 0.8);
     if (k.has('s') || k.has('arrowdown')) b.throttle = Math.max(-0.5, b.throttle - dt * 0.8);
     let r = 0;
@@ -411,7 +491,10 @@ class Game {
         if (p.isPlayer) { this.gameOver('You succumbed to hunger and thirst.'); break; }
         b.removePerson(p); f.stats.lost++; this.ui.toast(`${p.name} has died.`, 'bad');
       }
-      if (f.player) this.camCtl.update(dt, f.player, this.water);
+      if (f.player && this.onFoot && this.playerPerson.boat) {
+        const wp = this.playerPerson.mesh.getWorldPosition(new THREE.Vector3());
+        this.camCtl.update(dt, { x: wp.x, y: wp.y - 0.4, z: wp.z, heading: f.player.heading, speed: 0, L: 0 }, this.water);
+      } else if (f.player) this.camCtl.update(dt, f.player, this.water);
     } else if (f.player && !this.started) {
       // idle title-screen orbit
       this.camCtl.yaw += rawDt * 0.05; this.camCtl.update(rawDt, f.player, this.water);

@@ -422,6 +422,14 @@ export class World {
   findInteraction() {
     const pl = this.game.fleet.player; if (!pl) return null;
     let best = null, bd = Infinity;
+    if (this.game.onFoot) {
+      const me = this.game.playerPerson;
+      for (const a of me.boat ? me.boat.animals : []) {
+        const d = Math.hypot(a.local.x - me.local.x, a.local.z - me.local.z);
+        if (d < 1.4 && d < bd) { bd = d; best = { kind: 'pet', target: a, label: `[E] Pet the ${a.type}` }; }
+      }
+      if (best) return best;
+    }
     const consider = (kind, target, d, label) => { if (d < bd) { bd = d; best = { kind, target, label }; } };
     for (const g of this.groups) {
       const d = g.state === 'roof' ? rectDistance(g.c.roof, pl.x, pl.z) - pl.B * 0.5 : Math.hypot(g.x - pl.x, g.z - pl.z) - pl.L * 0.5;
@@ -448,6 +456,13 @@ export class World {
     const it = this.findInteraction();
     if (!it) return;
     const fleet = this.game.fleet, pl = fleet.player, ui = this.game.ui;
+    if (it.kind === 'pet') {
+      const a = it.target; a.happy = 4;
+      const now = performance.now();
+      if (!a.lastPet || now - a.lastPet > 60000) { fleet.morale = Math.min(100, fleet.morale + 1.5); a.lastPet = now; }
+      ui.toast(pick(this.rng, [`The ${a.type} leans into your hand.`, `The ${a.type} looks very pleased about this.`, `You scratch the ${a.type} behind the ears. Things feel a little less grim.`]), 'good');
+      return;
+    }
     if (it.kind === 'rescue') {
       const g = it.target;
       const totalFree = fleet.boats.reduce((a, b) => a + Math.max(0, b.freeBerths), 0);
