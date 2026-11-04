@@ -28,10 +28,12 @@
   .toast.good { border-color: #6fbf73; } .toast.bad { border-color: #e05040; } .toast.warn { border-color: #ffb060; } .toast.loot { border-color: #e8d070; }
   .toast.fade { opacity: 0; }
   .overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; background: radial-gradient(ellipse at center, rgba(5,12,18,0.35), rgba(5,12,18,0.85)); }
-  #title { cursor: pointer; }
+  #title { cursor: default; }
+  .ctas { display: flex; gap: 12px; margin-top: 18px; flex-wrap: wrap; justify-content: center; }
+  .cta.alt { color: #9fd8ff; border-color: #9fd8ff; animation: none; }
   #title h1 { font-size: 72px; letter-spacing: 14px; margin: 0; font-weight: 300; color: #f4efe4; text-shadow: 0 4px 30px rgba(0,0,0,0.6); }
   #title p { max-width: 640px; text-align: center; color: #c6d4da; line-height: 1.6; }
-  .cta { margin-top: 18px; padding: 10px 26px; border: 1px solid #ffcf8a; border-radius: 30px; color: #ffcf8a; font-size: 16px; animation: pulse 2s infinite; }
+  .cta { padding: 10px 26px; background: rgba(0,0,0,0.25); border: 1px solid #ffcf8a; border-radius: 30px; color: #ffcf8a; font-size: 16px; animation: pulse 2s infinite; cursor: pointer; }
   @keyframes pulse { 50% { opacity: 0.55; } }
   .keys { display: grid; grid-template-columns: auto auto; gap: 3px 18px; font-size: 13px; color: #c6d4da; margin-top: 16px; }
   .keys b { color: #ffcf8a; font-weight: 600; text-align: right; }
@@ -79,6 +81,7 @@
     <b>L</b><span>Searchlight (if fitted)</span>
     <b>Mouse</b><span>Drag to orbit, wheel to zoom</span>
     <b>T</b><span>Time warp ×1 / ×6 / ×30 · P pause</span>
+    <b>K / O</b><span>Save / load (autosaves every 90 s, stored in this browser)</span>
     <b>[ ]</b><span>Debug: lower / raise flood 5 m</span>
   </div>
   <p class="dim">Floating supplies are collected automatically when any floatilla boat passes close. Crew pick their own jobs: helm, fishing, trimming sails, rowing, repairs, lookout, sleep. Everyone eats and drinks. The water never stops rising.</p>
@@ -97,7 +100,7 @@
     <b>W/S</b><span>throttle</span><b>A/D</b><span>steer</span><b>R</b><span>sails</span><b>E</b><span>interact</span>
     <b>C</b><span>craft</span><b>Tab</b><span>switch lead boat</span><b>F</b><span>detach / regroup</span><b>H</b><span>all controls</span>
   </div>
-  <div class="cta">Click to cast off</div>
+  <div class="ctas"><button class="cta" id="cta-new">Cast off — new voyage</button><button class="cta alt" id="cta-continue" style="display:none">Continue</button></div>
 </div>
 
 <div id="gameover" class="overlay">

@@ -4,7 +4,11 @@ A 3D browser survival game. The sea is rising over a harbor city. You captain a 
 
 Built with Three.js + Vite. There are no asset files: terrain, city, boats, people, animals, water, sky and audio are all generated in code.
 
-## Run
+## Play online
+
+Once GitHub Pages is enabled (Settings → Pages → Source: GitHub Actions), every push to `main` or `claude/brave-thompson-92glte` rebuilds and publishes the game at https://leftoverjacksons.github.io/Floatilla/.
+
+## Run locally
 
 ```bash
 npm install
@@ -32,6 +36,7 @@ Open the printed URL. Append `?q=low` for a low-quality mode (no shadows, reduce
 | L | Searchlight (if fitted) |
 | Mouse | Drag to orbit, wheel to zoom |
 | T | Time warp ×1 / ×6 / ×30 · P pause · H help |
+| K / O | Save / load. Autosaves every 90 s to this browser's local storage; the title screen offers Continue |
 | [ / ] | Debug: lower / raise the flood 5 m |
 
 ## Systems
@@ -42,7 +47,7 @@ Open the printed URL. Append `?q=low` for a low-quality mode (no shadows, reduce
 - **Boats.** Ten archetypes (raft, rowboat, skiff, sloop, trawler, tug, motor yacht, houseboat, barge, schooner, plus raiders). Each hull is lofted from randomized parameters: length, beam, draft, freeboard, bow fineness, deadrise and section shape. Physics: engine thrust (uses fuel), sail force from the apparent-wind angle (no-go zone, best on a reach, heel, gale damage if sails stay up), rowing fallback, quadratic drag with hull-speed limit for displacement hulls, and spring buoyancy for heave/pitch/roll from 5 wave samples. Boats collide with buildings, shoals, submerged roofs, shore, and each other.
 - **Modules.** Sail, outboard, storage, shelter, armor, outriggers, net, rain catcher, solar still, planters and searchlight are built onto deck slots. You can also lengthen a hull, which rebuilds its geometry, and build new rafts or rowboats.
 - **Crew.** Each person picks their own job: helm, repair, bail, trim sails, row, fish, lookout, or sleep at night. Everyone eats and drinks from shared stores. Morale scales how much work gets done. Animals add morale, and some produce food.
-- **Fleet.** Followers trace the lead boat's wake (breadcrumb trail with pure-pursuit steering and obstacle feelers), so they thread streets behind you. You can detach for recon, call them back, hold position, or switch which boat you captain.
+- **Fleet.** Sail-only AI boats beat upwind on alternating close-hauled tacks, switching on a leg timer, at the layline, or when the current tack is blocked. Followers trace the lead boat's wake (breadcrumb trail with pure-pursuit steering and obstacle feelers), so they thread streets behind you. You can detach for recon, call them back, hold position, or switch which boat you captain.
 - **World.** Floating supplies, survivors on rooftops near the waterline (they end up in the water when it reaches them, and drown if nobody comes), rooftop caches, derelict boats, NPC survivor boats you can recruit with food, and raiders from day 3. Raiders back off if your boat is well crewed, armored, lit at night, or escorted.
 
 ## Code map

@@ -30,6 +30,38 @@ export function isBlocked(x, z, b, ctx) {
   return top > ctx.water.level - b.design.draft * 0.9;
 }
 
+const NO_GO = 48 * Math.PI / 180;   // closest a square-ish rig can point to the true wind
+const TACK_ANGLE = 52 * Math.PI / 180;
+
+/**
+ * Pick a heading toward (tx, tz). Sail-only boats whose target lies inside the
+ * no-go cone beat upwind on alternating tacks (close-hauled at TACK_ANGLE off
+ * the wind), switching when the leg timer runs out, the target crosses the
+ * layline onto the other side, or the current tack runs into an obstacle.
+ */
+function tackHeading(b, tx, tz, dist, ctx, dt, blocked) {
+  const W = ctx.wind;
+  const upwind = Math.atan2(-W.x, -W.y); // heading pointing into the wind
+  const bearing = Math.atan2(tx - b.x, tz - b.z);
+  const off = angleDiff(upwind, bearing); // + = target to the "right" of upwind (in heading terms)
+  const ai = b.ai;
+  if (Math.abs(off) > NO_GO || dist < 15) { ai.tacking = false; return null; }
+  if (!ai.tacking) {
+    ai.tacking = true;
+    ai.tack = off >= 0 ? 1 : -1; // start on the tack that already makes progress toward the target
+    ai.legTimer = 0;
+  }
+  ai.legTimer += dt;
+  const legMax = clamp(dist / 4, 12, 45);
+  // Layline: once the target sits beyond the opposite close-hauled line, the other tack fetches it.
+  const pastLayline = ai.tack > 0 ? off < -TACK_ANGLE * 0.35 : off > TACK_ANGLE * 0.35;
+  const heading = upwind + ai.tack * TACK_ANGLE;
+  if ((ai.legTimer > legMax && Math.abs(off) < NO_GO * 0.8) || pastLayline || (ai.legTimer > 4 && blocked(heading))) {
+    ai.tack = -ai.tack; ai.legTimer = 0;
+  }
+  return upwind + ai.tack * TACK_ANGLE;
+}
+
 export function steerBoat(b, tx, tz, desiredSpeed, ctx, dt, opts = {}) {
   const dx = tx - b.x, dz = tz - b.z, dist = Math.hypot(dx, dz);
   let desired = Math.atan2(dx, dz);
@@ -38,6 +70,13 @@ export function steerBoat(b, tx, tz, desiredSpeed, ctx, dt, opts = {}) {
     for (const f of [0.35, 0.7, 1]) if (isBlocked(b.x + Math.sin(ang) * look * f, b.z + Math.cos(ang) * look * f, b, ctx)) return true;
     return false;
   };
+  const canEngine = b.enginePower > 0 && ctx.fuel(b) > (opts.fuelReserve ?? 0) && !opts.preferSail;
+  b.noEngine = !canEngine;
+  const sailing = b.rigs.length > 0 && !canEngine && ctx.env.windSpeed < 15 && ctx.env.windSpeed > 1 && desiredSpeed > 1;
+  let tackH = null;
+  if (sailing) tackH = tackHeading(b, tx, tz, dist, ctx, dt, blocked);
+  else b.ai.tacking = false;
+  if (tackH !== null) desired = tackH;
   if (dist > 3 && blocked(desired)) {
     for (const off of [0.35, -0.35, 0.7, -0.7, 1.1, -1.1, 1.6, -1.6, 2.2, -2.2]) {
       const o = off * (b.ai.sideBias || 1);
@@ -49,22 +88,23 @@ export function steerBoat(b, tx, tz, desiredSpeed, ctx, dt, opts = {}) {
   const u = b.forwardSpeed;
   let thr = clamp((desiredSpeed - u) * 0.6 + desiredSpeed * 0.1, -0.6, 1);
   if (Math.abs(err) > 1.3 && dist < 25) thr = Math.min(thr, 0.35);
-  // Propulsion choice.
-  const canEngine = b.enginePower > 0 && ctx.fuel(b) > (opts.fuelReserve ?? 0);
-  b.noEngine = !canEngine;
   if (b.rigs.length) {
     const W = ctx.wind;
     const wn = Math.hypot(W.x, W.y) + 1e-4;
     const cosA = (Math.sin(desired) * -W.x + Math.cos(desired) * -W.y) / wn;
     const alpha = Math.acos(clamp(cosA, -1, 1)) * 180 / Math.PI;
-    b.sailsUp = alpha > 45 && ctx.env.windSpeed < 15 && desiredSpeed > 1 && dist > 12;
-    if (b.sailsUp && !canEngine) thr = Math.min(thr, 0.0);
+    b.sailsUp = (tackH !== null || alpha > 45) && ctx.env.windSpeed < 15 && desiredSpeed > 1 && dist > 12;
+    if (b.sailsUp && !canEngine) {
+      // Sail does the work. Only scull/paddle while the bow swings through the wind or the boat is nearly stopped.
+      const inIrons = (b.sailDrive ?? 0) < 0.1 || u < 0.6;
+      thr = inIrons ? 0.35 : 0;
+    }
   }
   // Stuck recovery: reverse briefly with opposite rudder.
-  if (thr > 0.4 && b.speed < 0.3) b.ai.stuck += dt; else b.ai.stuck = Math.max(0, b.ai.stuck - dt);
+  if (thr > 0.3 && b.speed < 0.3) b.ai.stuck += dt; else b.ai.stuck = Math.max(0, b.ai.stuck - dt);
   if (b.ai.reverse > 0) {
     b.ai.reverse -= dt; thr = -0.8; b.rudder = -b.rudder;
-  } else if (b.ai.stuck > 3) { b.ai.reverse = 2.5; b.ai.stuck = 0; b.ai.sideBias = -(b.ai.sideBias || 1); }
+  } else if (b.ai.stuck > 4) { b.ai.reverse = 2.5; b.ai.stuck = 0; b.ai.sideBias = -(b.ai.sideBias || 1); if (b.ai.tacking) { b.ai.tack = -b.ai.tack; b.ai.legTimer = 0; } }
   b.throttle = thr;
   return dist;
 }

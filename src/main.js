@@ -12,6 +12,7 @@ import { UI } from './ui.js';
 import { CameraController } from './camera.js';
 import { Audio } from './audio.js';
 import { Fx } from './fx.js';
+import { readSave, writeSave, restore, consumeLoadFlag, requestLoadOnReload } from './save.js';
 
 class Game {
   constructor() {
@@ -62,7 +63,13 @@ class Game {
       onSinking: (b) => this.onSinking(b),
     };
 
-    this.setupStart();
+    const save = consumeLoadFlag() ? readSave() : null;
+    this.loadedFromSave = false;
+    if (save) {
+      try { restore(this, save); this.loadedFromSave = true; }
+      catch (err) { console.error('Save could not be restored', err); location.reload(); return; }
+    } else this.setupStart();
+    this.autosaveTimer = 90;
     this.searchlight = new THREE.SpotLight(0xfff4dd, 0, 140, 0.32, 0.4, 1.2);
     this.searchlight.castShadow = false;
     this.scene.add(this.searchlight, this.searchlight.target);
@@ -111,11 +118,27 @@ class Game {
 
   bindInput() {
     const title = document.getElementById('title');
-    title.addEventListener('click', () => {
+    const cta = document.getElementById('cta-new'), cont = document.getElementById('cta-continue');
+    const existing = readSave();
+    const start = () => {
       title.style.display = 'none'; this.started = true; this.audio.init();
-      this.ui.toast('Day 1. The sea is coming in. Find survivors, gather what floats, build a floatilla.', 'info');
-      this.ui.toast('Tip: W/S throttle, A/D steer, R sails, E interact, C craft, H help.', 'info');
-    });
+      if (this.loadedFromSave) this.ui.toast(`Voyage resumed: ${this.env.timeString()}, flood at ${this.env.level.toFixed(1)} m.`, 'good');
+      else {
+        this.ui.toast('Day 1. The sea is coming in. Find survivors, gather what floats, build a floatilla.', 'info');
+        this.ui.toast('Tip: W/S throttle, A/D steer, R sails, E interact, C craft, H help. K saves (autosave every 90 s).', 'info');
+      }
+    };
+    if (this.loadedFromSave) {
+      cta.textContent = `Resume — ${this.env.timeString()}`;
+      cont.style.display = 'none';
+    } else if (existing) {
+      const n = existing.boats.length;
+      cont.textContent = `Continue — Day ${existing.env.day}, ${n} boat${n > 1 ? 's' : ''}`;
+      cont.style.display = '';
+      cont.onclick = (e) => { e.stopPropagation(); requestLoadOnReload(); };
+      cta.textContent = 'New voyage (overwrites save on next save)';
+    } else cont.style.display = 'none';
+    cta.onclick = (e) => { e.stopPropagation(); start(); };
     window.addEventListener('keydown', (e) => {
       if (!this.started || this.over) return;
       const k = e.key.toLowerCase();
@@ -140,6 +163,8 @@ class Game {
         case 'g': this.ui.toast(f.toggleHold()); break;
         case 'l': if (pl.count('light')) { pl.lightOn = !pl.lightOn; } else this.ui.toast('No searchlight on this boat — craft one (C).'); break;
         case 't': this.env.timeScale = this.env.timeScale === 1 ? 6 : this.env.timeScale === 6 ? 30 : 1; this.ui.toast(`Time ×${this.env.timeScale}`); break;
+        case 'k': this.ui.toast(writeSave(this) ? `Saved (${this.env.timeString()}).` : 'Could not save.', 'good'); break;
+        case 'o': if (readSave()) { this.ui.toast('Loading last save…'); setTimeout(requestLoadOnReload, 300); } else this.ui.toast('No save found.', 'warn'); break;
         case ']': this.env.levelOffset += 5; this.ui.toast('[debug] Flood +5 m'); break;
         case '[': this.env.levelOffset -= 5; this.ui.toast('[debug] Flood −5 m'); break;
       }
@@ -278,6 +303,8 @@ class Game {
       f.update(dt, this.ctx, gameHours);
       for (const b of [...f.boats]) b.update(dt, this.ctx);
       this.collideBoats();
+      this.autosaveTimer -= dt;
+      if (this.autosaveTimer <= 0) { this.autosaveTimer = 90; writeSave(this); }
       this.world.update(dt, this.ctx);
       for (const b of [...this.world.boats]) if (b.sunk && b.fleet === null && !f.boats.includes(b)) this.world.removeBoat(b);
       // people health

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { pick, rand, FIRST_NAMES, damp } from './util.js';
+import { pick, rand, FIRST_NAMES, damp, mulberry32 } from './util.js';
 
 const SKIN = [0xf1c27d, 0xe0ac69, 0xc68642, 0x8d5524, 0xffdbac, 0x6b4226];
 const SHIRTS = [0x2e6da4, 0x7a2e2e, 0x3d7a3d, 0x8a6d2e, 0x555a66, 0x9b4f8a, 0x2e8a86, 0xb5651d, 0x444444];
@@ -44,12 +44,15 @@ export function makePersonMesh(rng, opts = {}) {
 
 export class Person {
   constructor(rng, opts = {}) {
+    // Appearance comes from a per-person seed so a saved crew looks the same after loading.
+    this.seed = opts.seed ?? Math.floor(rng() * 1e9);
+    const look = mulberry32(this.seed);
     this.rng = rng;
-    this.name = opts.name || pick(rng, FIRST_NAMES);
+    this.name = opts.name || pick(look, FIRST_NAMES);
     this.isPlayer = !!opts.isPlayer;
-    this.health = 100;
-    this.skill = { repair: rand(rng, 0.6, 1.4), fish: rand(rng, 0.6, 1.4), sail: rand(rng, 0.6, 1.4) };
-    this.rig = makePersonMesh(rng, opts.isPlayer ? { shirt: 0x24476b, vest: 0xff7a1a, hat: 0xd9b44a } : {});
+    this.health = opts.health ?? 100;
+    this.skill = opts.skill ?? { repair: rand(look, 0.6, 1.4), fish: rand(look, 0.6, 1.4), sail: rand(look, 0.6, 1.4) };
+    this.rig = makePersonMesh(look, opts.isPlayer ? { shirt: 0x24476b, vest: 0xff7a1a, hat: 0xd9b44a } : {});
     this.mesh = this.rig.group;
     this.task = 'idle';
     this.local = new THREE.Vector3();
@@ -104,11 +107,12 @@ export const ANIMALS = {
 };
 
 export class Animal {
-  constructor(rng, type) {
+  constructor(rng, type, seed) {
+    this.seed = seed ?? Math.floor(rng() * 1e9);
     this.type = type; this.def = ANIMALS[type]; this.rng = rng;
     this.local = new THREE.Vector3(); this.target = new THREE.Vector3(); this.phase = rand(rng, 0, 10);
     this.boat = null; this.state = 'aboard'; this.jump = null;
-    const d = this.def, col = pick(rng, d.colors);
+    const d = this.def, col = pick(mulberry32(this.seed), d.colors);
     const g = new THREE.Group();
     const body = new THREE.Mesh(boxGeo, mat(col)); body.scale.set(...d.body); body.position.y = d.legH + d.body[1] / 2; body.castShadow = true; g.add(body);
     const head = new THREE.Mesh(boxGeo, mat(col)); head.scale.setScalar(d.head); head.position.set(0, d.legH + d.body[1] * 0.95, d.body[2] / 2 + d.head * 0.3); g.add(head);

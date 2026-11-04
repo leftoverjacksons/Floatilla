@@ -361,7 +361,7 @@ export class World {
       b.ai.target = this.randomWaterPoint(b.x, b.z, 80, 250, b.design.draft + 1, 3, 8) || { x: b.x, z: b.z };
       b.ai.wanderTimer = 60;
     }
-    steerBoat(b, b.ai.target.x, b.ai.target.z, 2.2, ctx, dt, { fuelReserve: 0 });
+    steerBoat(b, b.ai.target.x, b.ai.target.z, 2.2, ctx, dt, { fuelReserve: 0, preferSail: b.rigs.length > 0 });
   }
 
   raiderAI(b, dt, ctx) {

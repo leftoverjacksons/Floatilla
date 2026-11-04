@@ -650,7 +650,7 @@ export class Boat {
         const T = 260 * Math.pow(this.enginePower, 0.75) * thr * (thr < 0 ? 0.5 : 1);
         Fu += T; this.engineOn = true;
         ctx.useFuel(Math.abs(thr) * Math.pow(this.enginePower, 0.6) * 0.0012 * dt, this);
-      } else if (this.sailDeploy < 0.5 || thr < 0) {
+      } else if (this.sailDeploy < 0.5 || thr < 0 || (this.sailDrive ?? 0) < 0.1) {
         this.rowingWanted = true;
         const rowers = Math.max(1, Math.min(crewN, L < 9 ? 4 : 6));
         Fu += thr * rowers * (L < 9 ? 160 : 110) * (thr < 0 ? 0.6 : 1) * (this.design.kind === 'raft' ? 0.8 : 1);
