@@ -22,6 +22,8 @@ Open the printed URL. High quality is the default: planar water reflections, MSA
 
 ## Controls
 
+**Right-click** anywhere opens the action wheel with every command (hover to see what it does; click, or release the right button over an item). The keys below are shortcuts.
+
 | Key | Action |
 | --- | --- |
 | W / S | Throttle lever up / down (below zero = astern). Space = all stop |
@@ -34,12 +36,14 @@ Open the printed URL. High quality is the default: planar water reflections, MSA
 | F | Detach from the floatilla (it anchors), press again to recall it |
 | G | Fleet hold / follow |
 | L | Searchlight (if fitted) |
-| Mouse | Drag to orbit, wheel to zoom |
+| Mouse | Left-drag to orbit, wheel to zoom, right-click for the action wheel |
 | T | Time warp ×1 / ×6 / ×30 · P pause · H help |
 | K / O | Save / load. Autosaves every 90 s to this browser's local storage; the title screen offers Continue |
 | [ / ] | Debug: lower / raise the flood 5 m |
 
 ## Systems
+
+- **Start.** You, a dog, and a tired 10 m sloop (55% hull, 8 hp auxiliary, one mast, 4 deck slots, 6 berths). Everything else has to be found or built.
 
 - **Pacing.** A game day lasts 20 real minutes. The game opens with the low harbor district already under about 4 m of water, then rises only a few centimetres per hour at first; it reaches about 75 m after roughly two in-game months. Survivors, supplies and derelict boats are sparse and spaced out by timers, derelicts are badly damaged (sluggish and waterlogged until repaired), and every repeat of a module on the same boat costs 1.7× the previous one.
 - **Exploration.** The minimap shows only what your crew has spotted (sight range shrinks at night and in fog, grows with lookouts); spotted things stay marked.

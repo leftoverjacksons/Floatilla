@@ -17,6 +17,7 @@ import { UI } from './ui.js';
 import { CameraController } from './camera.js';
 import { Audio } from './audio.js';
 import { Fx } from './fx.js';
+import { RadialMenu } from './radial.js';
 import { readSave, writeSave, restore, consumeLoadFlag, requestLoadOnReload } from './save.js';
 
 class Game {
@@ -124,16 +125,16 @@ class Game {
   setupStart() {
     const rng = this.rng;
     this.water.level = 0;
-    const d = randomDesign(rng, 'skiff');
-    d.engine = 20; d.name = 'Little Ark';
-    const boat = new Boat(d, { x: 12, z: 70, heading: Math.PI, role: 'player', flagColor: 0xff7a1a });
+    // A tired 10 m cruising sloop: room to grow into, a weak auxiliary engine and a hull that needs work.
+    const d = randomDesign(rng, 'sailboat');
+    Object.assign(d, { length: 10, beam: 3.3, draft: 1.1, freeboard: 0.95, engine: 8, name: 'Little Ark', hullColor: 0xe8e2d0, trimColor: 0x1f3f6b, clothColor: 0xe8dcc0 });
+    const boat = new Boat(d, { x: 12, z: 70, heading: Math.PI, role: 'player', flagColor: 0xff7a1a, hpFrac: 0.55 });
     this.scene.add(boat.root);
     this.world.boats.push(boat);
     this.playerPerson = new Person(rng, { isPlayer: true, name: 'You' });
     this.fleet.boats.push(boat); boat.fleet = this.fleet;
     this.fleet.player = boat;
     boat.addPerson(this.playerPerson);
-    boat.addPerson(new Person(rng));
     boat.addAnimal(new Animal(rng, 'dog'));
     this.fleet.trail = [{ x: boat.x, z: boat.z }];
     this.camCtl.snapTo(boat);
@@ -171,8 +172,8 @@ class Game {
       title.style.display = 'none'; this.started = true; this.audio.init();
       if (this.loadedFromSave) this.ui.toast(`Voyage resumed: ${this.env.timeString()}, flood at ${this.env.level.toFixed(1)} m.`, 'good');
       else {
-        this.ui.toast('Day 1. The sea is coming in. Find survivors, gather what floats, build a floatilla.', 'info');
-        this.ui.toast('Tip: W/S throttle, A/D steer, R sails, E interact, C craft, H help. K saves (autosave every 90 s).', 'info');
+        this.ui.toast('Day 1. Just you, the dog and a tired old sloop. The harbor is already under water. Find people. Mend the boat.', 'info');
+        this.ui.toast('W/S throttle, A/D steer. Right-click anywhere for the action wheel: sails, interact, workshop, fleet, save.', 'info');
       }
     };
     if (this.loadedFromSave) {
@@ -200,25 +201,73 @@ class Game {
         case 'p': if (!this.ui.craftOpen) this.paused = !this.paused; break;
       }
       if (this.paused) return;
+      const A = this.actions;
       switch (k) {
-        case 'e': this.world.interact(false); break;
-        case 'x': { const it = this.world.findInteraction(); if (it && it.kind === 'claim') this.world.interact(true); break; }
-        case 'r': if (pl.rigs.length) { pl.sailsUp = !pl.sailsUp; this.ui.toast(pl.sailsUp ? 'Sails up.' : 'Sails furled.'); } else this.ui.toast('No sails on this boat — craft a Mast & Sail (C).', 'warn'); break;
-        case ' ': pl.throttle = 0; break;
-        case 'tab': { const b = f.cycleLead(e.shiftKey ? -1 : 1); if (b) this.ui.toast(`You take the helm of the ${b.name}.`); else this.ui.toast('No other boats in the floatilla yet.'); break; }
-        case 'f': if (f.boats.length > 1) this.ui.toast(f.toggleDetach()); else this.ui.toast('You have no floatilla to detach from yet.'); break;
-        case 'g': this.ui.toast(f.toggleHold()); break;
-        case 'l': if (pl.count('light')) { pl.lightOn = !pl.lightOn; } else this.ui.toast('No searchlight on this boat — craft one (C).'); break;
-        case 't': this.env.timeScale = this.env.timeScale === 1 ? 6 : this.env.timeScale === 6 ? 30 : 1; this.ui.toast(`Time ×${this.env.timeScale}`); break;
-        case 'k': this.ui.toast(writeSave(this) ? `Saved (${this.env.timeString()}).` : 'Could not save.', 'good'); break;
-        case 'o': if (readSave()) { this.ui.toast('Loading last save…'); setTimeout(requestLoadOnReload, 300); } else this.ui.toast('No save found.', 'warn'); break;
+        case 'e': A.interact(); break;
+        case 'x': A.salvage(); break;
+        case 'r': A.sails(); break;
+        case ' ': A.stop(); break;
+        case 'tab': A.switchBoat(e.shiftKey ? -1 : 1); break;
+        case 'f': A.detach(); break;
+        case 'g': A.hold(); break;
+        case 'l': A.light(); break;
+        case 't': A.time(); break;
+        case 'k': A.save(); break;
+        case 'o': A.load(); break;
         case ']': this.env.levelOffset += 5; this.ui.toast('[debug] Flood +5 m'); break;
         case '[': this.env.levelOffset -= 5; this.ui.toast('[debug] Flood −5 m'); break;
       }
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.key.toLowerCase()));
+    this.radial = new RadialMenu(this);
     window.addEventListener('blur', () => this.keys.clear());
     document.getElementById('restart').onclick = () => location.reload();
+  }
+
+  /** Every player action, shared by the hotkeys and the right-click radial menu. */
+  get actions() {
+    const f = this.fleet, pl = f.player, ui = this.ui;
+    return {
+      interact: () => this.world.interact(false),
+      salvage: () => { const it = this.world.findInteraction(); if (it && it.kind === 'claim') this.world.interact(true); },
+      sails: () => { if (pl.rigs.length) { pl.sailsUp = !pl.sailsUp; ui.toast(pl.sailsUp ? 'Sails up.' : 'Sails furled.'); } else ui.toast('No sails on this boat — build a Mast & Sail in the Workshop.', 'warn'); },
+      stop: () => { pl.throttle = 0; },
+      craft: () => ui.toggleCraft(),
+      switchBoat: (dir = 1) => { const b = f.cycleLead(dir); ui.toast(b ? `You take the helm of the ${b.name}.` : 'No other boats in the floatilla yet.'); },
+      detach: () => ui.toast(f.boats.length > 1 ? f.toggleDetach() : 'You have no floatilla to detach from yet.'),
+      hold: () => ui.toast(f.toggleHold()),
+      light: () => { if (pl.count('light')) pl.lightOn = !pl.lightOn; else ui.toast('No searchlight on this boat — build one in the Workshop.'); },
+      time: () => { this.env.timeScale = this.env.timeScale === 1 ? 6 : this.env.timeScale === 6 ? 30 : 1; ui.toast(`Time ×${this.env.timeScale}`); },
+      save: () => ui.toast(writeSave(this) ? `Saved (${this.env.timeString()}).` : 'Could not save.', 'good'),
+      load: () => { if (readSave()) { ui.toast('Loading last save…'); setTimeout(requestLoadOnReload, 300); } else ui.toast('No save found.', 'warn'); },
+      pause: () => { if (!ui.craftOpen) this.paused = !this.paused; },
+      help: () => this.toggleHelp(),
+    };
+  }
+
+  /** Items for the radial menu, built fresh each time it opens so labels reflect the current state. */
+  menuItems() {
+    const f = this.fleet, pl = f.player, A = this.actions;
+    const it = this.world.findInteraction();
+    const many = f.boats.length > 1;
+    const items = [
+      { icon: '✋', label: it ? it.label.replace(/\[[A-Z]\]\s*/g, '').split('·')[0].trim() : 'Interact', key: 'E', accent: !!it, disabled: !it, why: 'Nothing close enough. Bring the boat alongside survivors, a rooftop cache or another boat.', desc: 'Do it.', run: A.interact },
+    ];
+    if (it && it.kind === 'claim') items.push({ icon: '⚒', label: 'Salvage', key: 'X', desc: 'Strip this boat for wood, scrap, cloth and parts. It sinks.', run: A.salvage });
+    items.push(
+      { icon: '⛵', label: pl.sailsUp ? 'Furl sails' : 'Raise sails', key: 'R', disabled: !pl.rigs.length, why: 'This boat has no mast. Build a Mast & Sail in the Workshop.', desc: 'Sails give no drive within about 35° of the wind.', run: A.sails },
+      { icon: '⏹', label: 'All stop', key: 'Space', disabled: pl.throttle === 0, why: 'Throttle is already at zero.', desc: 'Throttle to zero.', run: A.stop },
+      { icon: '🔨', label: 'Workshop', key: 'C', desc: 'Repairs, upgrades and boatbuilding. Pauses the game.', run: A.craft },
+      { icon: '⚓', label: f.mode === 'hold' ? 'Fleet: follow me' : 'Fleet: hold', key: 'G', disabled: !many, why: 'You have no other boats yet.', desc: f.mode === 'hold' ? 'Boats weigh anchor and follow your wake.' : 'All other boats drop anchor where they are.', run: A.hold },
+      { icon: '🧭', label: f.detached ? 'Regroup' : 'Go alone', key: 'F', disabled: !many, why: 'You have no other boats yet.', desc: f.detached ? 'Call the floatilla to your position.' : 'Leave the floatilla anchored and scout ahead.', run: A.detach },
+      { icon: '⇄', label: 'Switch boat', key: 'Tab', disabled: !many, why: 'You have no other boats yet.', desc: 'Take the helm of the next boat; it becomes the lead.', run: () => A.switchBoat(1) },
+      { icon: '🔦', label: pl.lightOn ? 'Light off' : 'Searchlight', key: 'L', disabled: !pl.count('light'), why: 'No searchlight fitted. Build one in the Workshop.', desc: 'Lights the way at night and deters raiders.', run: A.light },
+      { icon: '⏩', label: `Time ×${this.env.timeScale === 1 ? 6 : this.env.timeScale === 6 ? 30 : 1}`, key: 'T', desc: `Currently ×${this.env.timeScale}.`, run: A.time },
+      { icon: '💾', label: 'Save', key: 'K', desc: 'Save to this browser. Autosaves every 90 s.', run: A.save },
+      { icon: '📂', label: 'Load', key: 'O', disabled: !readSave(), why: 'No save yet.', desc: 'Reload the last save.', run: A.load },
+      { icon: '?', label: 'Help', key: 'H', desc: 'All controls.', run: A.help },
+    );
+    return items;
   }
 
   toggleHelp(v) {

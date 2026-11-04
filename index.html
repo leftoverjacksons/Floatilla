@@ -51,6 +51,16 @@
   .recipe { display: grid; grid-template-columns: 1fr 170px 150px; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 6px; background: rgba(255,255,255,0.035); }
   .recipe.off { opacity: 0.7; }
   .cost span { margin-right: 6px; } .cost .short { color: #ff8a70; }
+  #radial { display: none; position: absolute; width: 0; height: 0; z-index: 20; }
+  #radial-center { position: absolute; left: -78px; top: -78px; width: 156px; height: 156px; border-radius: 50%; background: radial-gradient(circle, rgba(8,16,22,0.88) 60%, rgba(8,16,22,0.55)); border: 1px solid rgba(255,207,138,0.35); display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 18px; box-sizing: border-box; font-size: 12px; line-height: 1.35; color: #c6d4da; pointer-events: none; }
+  #radial-center b { color: #ffcf8a; font-size: 13px; margin-bottom: 4px; }
+  .ritem { position: absolute; width: 84px; height: 84px; margin: -42px 0 0 -42px; border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; padding: 4px; background: rgba(12,26,34,0.86); border: 1px solid rgba(160,200,220,0.28); color: #e6eef2; transition: transform .08s, background .08s; }
+  .ritem .ri { font-size: 20px; line-height: 1; }
+  .ritem .rl { font-size: 10.5px; line-height: 1.15; text-align: center; max-width: 76px; }
+  .ritem .rk { font-size: 9px; color: #8aa0ac; }
+  .ritem.hot { transform: scale(1.12); background: rgba(70,52,24,0.95); border-color: #ffcf8a; }
+  .ritem.accent { border-color: #ffcf8a; }
+  .ritem.off { opacity: 0.38; }
   #gameover { display: none; }
   #gameover h2 { font-size: 40px; font-weight: 300; letter-spacing: 6px; }
   #gameover p { max-width: 560px; text-align: center; line-height: 1.6; }
@@ -64,6 +74,7 @@
 <div id="hud-boat" class="panel"></div>
 <div id="hud-fleet" class="panel"></div>
 <div id="prompt"></div>
+<div id="radial"><div id="radial-center"></div></div>
 <div id="toasts"></div>
 
 <div id="help" class="panel">
@@ -79,7 +90,8 @@
     <b>F</b><span>Detach from the floatilla for recon / call it back</span>
     <b>G</b><span>Fleet: hold position / follow</span>
     <b>L</b><span>Searchlight (if fitted)</span>
-    <b>Mouse</b><span>Drag to orbit, wheel to zoom</span>
+    <b>Right-click</b><span>Action wheel: every command below, with what it does</span>
+    <b>Mouse</b><span>Left-drag to orbit, wheel to zoom</span>
     <b>T</b><span>Time warp ×1 / ×6 / ×30 · P pause</span>
     <b>K / O</b><span>Save / load (autosaves every 90 s, stored in this browser)</span>
     <b>[ ]</b><span>Debug: lower / raise flood 5 m</span>
@@ -98,7 +110,7 @@
   <p>The harbor is the first to go. Then the streets, the houses, the towers.<br>Gather what floats. Pull people from rooftops. Lash boats together and keep moving.</p>
   <div class="keys">
     <b>W/S</b><span>throttle</span><b>A/D</b><span>steer</span><b>R</b><span>sails</span><b>E</b><span>interact</span>
-    <b>C</b><span>craft</span><b>Tab</b><span>switch lead boat</span><b>F</b><span>detach / regroup</span><b>H</b><span>all controls</span>
+    <b>Right-click</b><span>action wheel (everything else)</span><b>Drag</b><span>orbit camera</span>
   </div>
   <div class="ctas"><button class="cta" id="cta-new">Cast off — new voyage</button><button class="cta alt" id="cta-continue" style="display:none">Continue</button></div>
 </div>

@@ -9,7 +9,7 @@ export class CameraController {
     this.target = new THREE.Vector3();
     this.dragging = false; this.lastDrag = -10; this.time = 0;
     this.shake = 0;
-    dom.addEventListener('mousedown', (e) => { if (e.target === dom) { this.dragging = true; this.px = e.clientX; this.py = e.clientY; } });
+    dom.addEventListener('mousedown', (e) => { if (e.target === dom && e.button !== 2) { this.dragging = true; this.px = e.clientX; this.py = e.clientY; } });
     window.addEventListener('mouseup', () => (this.dragging = false));
     window.addEventListener('mousemove', (e) => {
       if (!this.dragging) return;
