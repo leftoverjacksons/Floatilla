@@ -18,7 +18,7 @@ npm install
 npm run dev
 ```
 
-Open the printed URL. High quality is the default: planar water reflections, MSAA, bloom, a sky-baked environment map, 4096 px shadows. Append `?q=low` for a low-quality mode (none of those, reduced resolution) on weak GPUs.
+Open the printed URL. Quality can be switched in-game from the action wheel (Low / Medium / High; remembered per browser). High is the default: planar water reflections, MSAA, bloom, a sky-baked environment map, 4096 px shadows. Append `?q=low` for a low-quality mode (none of those, reduced resolution) on weak GPUs.
 
 ## Controls
 
@@ -29,6 +29,7 @@ Open the printed URL. High quality is the default: planar water reflections, MSA
 | W / S | Throttle lever up / down (below zero = astern). Space = all stop |
 | A / D | Rudder |
 | R | Raise / furl sails |
+| J | Journal |
 | V | Walk the deck / take the helm. On foot, WASD walks relative to the camera, Shift hurries, low cabin tops can be climbed, E pets animals; the boat holds course and throttle |
 | E | Interact: rescue, loot rooftop caches, crew a derelict, hail a boat |
 | X | Salvage a derelict for materials |
@@ -47,6 +48,7 @@ Open the printed URL. High quality is the default: planar water reflections, MSA
 - **Start.** You, a dog, and a tired 10 m sloop (55% hull, 8 hp auxiliary, one mast, 4 deck slots, 6 berths). Everything else has to be found or built.
 
 - **Pacing.** A game day lasts 20 real minutes. The game opens with the low harbor district already under about 4 m of water, then rises only a few centimetres per hour at first; it reaches about 75 m after roughly two in-game months. Survivors, supplies and derelict boats are sparse and spaced out by timers, derelicts are badly damaged (sluggish and waterlogged until repaired), and every repeat of a module on the same boat costs 1.7× the previous one.
+- **Landmarks.** Six set pieces: the breakwater lighthouse, a container ship aground in the bay, a Ferris wheel standing in the harbour, St. Brendan's church (its bell, rung once a day, reveals nearby survivors), Harbor Stadium (enterable once the flood tops its gates, ~6.8 m) and the KFLD relay station (~11 m; one broadcast brings two boats to you). Each gives a one-time haul and a written note; some hold survivors. The Journal (J) tracks them and predicts when the flood will open the rest.
 - **Exploration.** The minimap shows only what your crew has spotted (sight range shrinks at night and in fog, grows with lookouts); spotted things stay marked.
 - **Flood.** Plus tide and rain surge. Buildings and terrain are static; the water rises over them. Below-waterline surfaces are tinted and the band just above the waterline is wet-stained. City lights go out as the days pass.
 - **Water.** Gerstner waves. The four longest waves displace the mesh, and the same function runs on the CPU, so boats ride the waves you see. Shorter waves and wind/rain ripples only affect shading. A baked floor heightmap (terrain + building tops) damps waves in shallow water and draws foam around shores, walls and submerged roofs.

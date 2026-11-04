@@ -110,7 +110,7 @@ export class Environment {
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(2048, 2048);
     const sc = this.sun.shadow.camera; sc.left = -70; sc.right = 70; sc.top = 70; sc.bottom = -70; sc.near = 1; sc.far = 600;
-    this.sun.shadow.bias = -0.0006; this.sun.shadow.normalBias = 0.04;
+    this.sun.shadow.bias = -0.0004; this.sun.shadow.normalBias = 0.09; // larger normal bias removes acne on thin double-sided hulls
     scene.add(this.sun, this.sun.target);
     this.hemi = new THREE.HemisphereLight(0xbfd8ff, 0x3a4a3a, 0.8);
     scene.add(this.hemi);

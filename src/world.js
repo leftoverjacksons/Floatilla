@@ -213,6 +213,7 @@ export class World {
         if (g.timer <= 0) {
           if (g.people.length && Math.hypot(g.x - pl.x, g.z - pl.z) < 700) this.game.ui.toast(`${g.people.length} survivor${g.people.length > 1 ? 's' : ''} lost to the flood.`, 'bad');
           fleet.stats.lost += g.people.length;
+          if (g.landmark) g.landmark.rescued = true;
           this.removeGroup(g, i); continue;
         }
       }
@@ -366,6 +367,13 @@ export class World {
   }
 
   npcAI(b, dt, ctx) {
+    if (b.ai.seekPlayer) { // answering the radio: come alongside and wait to be hailed
+      const pl = this.game.fleet.player;
+      const d = Math.hypot(pl.x - b.x, pl.z - b.z);
+      if (d < 25) { b.throttle = 0; b.rudder = 0; b.sailsUp = false; return; }
+      steerBoat(b, pl.x, pl.z, d > 80 ? 5 : 2, ctx, dt, { fuelReserve: 0 });
+      return;
+    }
     b.ai.wanderTimer -= dt;
     if (!b.ai.target || b.ai.wanderTimer <= 0 || Math.hypot(b.ai.target.x - b.x, b.ai.target.z - b.z) < 15) {
       b.ai.target = this.randomWaterPoint(b.x, b.z, 80, 250, b.design.draft + 1, 3, 8) || { x: b.x, z: b.z };
@@ -405,6 +413,7 @@ export class World {
   }
 
   removeGroup(g, i, keepRoof) {
+    if (g.landmark && !g.landmark.rescued) g.landmark.groupSpawned = false;
     for (const p of g.people) this.scene.remove(p.mesh);
     for (const a of g.animals) this.scene.remove(a.mesh);
     this.scene.remove(g.extras);
@@ -449,6 +458,7 @@ export class World {
       if (b.role === 'derelict') consider('claim', b, d, `[E] Crew the abandoned ${b.design.label.toLowerCase()}  ·  [X] Salvage it`);
       else if (b.role === 'npc') consider('hail', b, d, `[E] Hail the ${b.name} (${b.crew.length} aboard)`);
     }
+    if (!best && this.game.landmarks) best = this.game.landmarks.findInteraction(pl);
     return best;
   }
 
@@ -456,6 +466,7 @@ export class World {
     const it = this.findInteraction();
     if (!it) return;
     const fleet = this.game.fleet, pl = fleet.player, ui = this.game.ui;
+    if (it.kind === 'landmark') { this.game.landmarks.interact(it.target); return; }
     if (it.kind === 'pet') {
       const a = it.target; a.happy = 4;
       const now = performance.now();
@@ -483,6 +494,7 @@ export class World {
       fleet.morale = Math.min(100, fleet.morale + 4 * g.people.length + 3 * g.animals.length);
       ui.toast(g.people.length ? `Rescued ${g.people.map((p) => p.name).join(', ')}${g.animals.length ? ` and a ${g.animals[0].type}` : ''}!` : `Rescued a ${g.animals[0].type}!`, 'good');
       this.game.audio.chime();
+      if (g.landmark) g.landmark.rescued = true;
       g.people = []; g.animals = [];
       const i = this.groups.indexOf(g); this.removeGroup(g, i, false);
     } else if (it.kind === 'loot') {

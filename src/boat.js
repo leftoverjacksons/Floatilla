@@ -82,7 +82,7 @@ function sectionPoint(d, prof, s) {
   return [x, Math.min(y, prof.top)];
 }
 
-function buildHullGeometry(d) {
+export function buildHullGeometry(d) {
   const N = 28, M = 10, L = d.length;
   const pos = [], col = [], idx = [];
   const cHull = new THREE.Color(d.hullColor), cTrim = new THREE.Color(d.trimColor), cBot = new THREE.Color(d.bottomColor);

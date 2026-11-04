@@ -23,6 +23,7 @@ export function serialize(game) {
       cur: { ...env.cur }, windAngle: env.windAngle, levelOffset: env.levelOffset },
     fleet: { inv: { ...fleet.inv }, morale: fleet.morale, stats: { ...fleet.stats }, mode: fleet.mode, detached: fleet.detached,
       playerIndex: fleet.boats.indexOf(fleet.player) },
+    landmarks: game.landmarks ? game.landmarks.serialize() : null,
     boats: fleet.boats.filter((b) => !b.sinking).map((b) => ({
       design: { ...b.design }, modules: [...b.modules], x: b.x, z: b.z, heading: b.heading, hp: b.hp,
       anchored: b.anchored, sailsUp: b.sailsUp, throttle: b.role === 'player' ? b.throttle : 0, lightOn: b.lightOn,
@@ -46,6 +47,7 @@ export function restore(game, data) {
   Object.assign(fleet.inv, data.fleet.inv);
   Object.assign(fleet.stats, data.fleet.stats);
   fleet.morale = data.fleet.morale;
+  if (game.landmarks) game.landmarks.restore(data.landmarks);
   const boats = data.boats.map((s, i) => {
     const b = new Boat(s.design, { x: s.x, z: s.z, heading: s.heading, modules: s.modules, role: i === data.fleet.playerIndex ? 'player' : 'follower', flagColor: 0xff7a1a });
     b.hp = Math.min(b.maxHp, s.hp); b.sailsUp = s.sailsUp; b.throttle = s.throttle; b.lightOn = !!s.lightOn;

@@ -135,7 +135,7 @@ export class Water {
     this.hideInReflection = [];
   }
   resizeReflections(renderer) {
-    if (!this.reflRT) return;
+    if (!this.reflRT || !this.reflectionsOn) return;
     const size = renderer.getDrawingBufferSize(new THREE.Vector2());
     this.reflRT.setSize(Math.max(1, size.x >> 1), Math.max(1, size.y >> 1));
   }

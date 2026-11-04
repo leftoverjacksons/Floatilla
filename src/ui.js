@@ -16,6 +16,8 @@ export class UI {
     this.craftOpen = false;
     this.craftBoat = null;
     $('craft-close').onclick = () => this.toggleCraft(false);
+    $('note-close').onclick = () => ($('note').style.display = 'none');
+    $('journal-close').onclick = () => this.toggleJournal(false);
   }
 
   toast(msg, kind = 'info') {
@@ -44,6 +46,7 @@ export class UI {
       <div class="big">${env.timeString()}</div>
       <div>${env.label} · wind ${env.windSpeed.toFixed(1)} m/s ${dirName(env.windAngle)}</div>
       <div>Flood level <b>${(env.level).toFixed(1)} m</b> <span class="dim">(+${(rate * 100).toFixed(0)} cm/h)</span></div>
+      <div class="dim">${Math.round(g.fps)} fps · ${g.quality} quality</div>
       ${env.timeScale > 1 ? `<div class="warn">TIME ×${env.timeScale}</div>` : ''}
       ${g.paused ? '<div class="warn">PAUSED</div>' : ''}`;
 
@@ -137,6 +140,18 @@ export class UI {
     // survivors with a flag (or a flare at night) are visible from further away
     for (const s of w.groups) if (seen(s, sight * (s.people.length ? 1.6 : 0.8))) dot(s.x, s.z, s.state === 'swim' ? '#ff3030' : '#ff7050', s.people.length ? pulse : 2.5);
     for (const b of w.boats) if (!b.fleet && seen(b, sight * 1.2)) dot(b.x, b.z, b.role === 'raider' ? '#000' : b.role === 'npc' ? '#fff' : '#9a9a9a', 3.5);
+    // landmarks once sighted: diamond + name
+    c.font = '10px sans-serif';
+    for (const lm of g.landmarks.list) {
+      if (!lm.discovered) continue;
+      let [a, b2] = toS(lm.x, lm.z);
+      const off = a < 4 || b2 < 4 || a > W - 4 || b2 > W - 4;
+      a = clamp(a, 6, W - 6); b2 = clamp(b2, 6, W - 6);
+      c.save(); c.translate(a, b2); c.rotate(Math.PI / 4);
+      c.fillStyle = lm.visited ? '#b8a07a' : '#ffcf8a'; c.strokeStyle = '#000'; c.lineWidth = 1;
+      c.fillRect(-4, -4, 8, 8); c.strokeRect(-4, -4, 8, 8); c.restore();
+      if (!off) { c.fillStyle = '#f4ead8'; c.fillText(lm.name.split(' (')[0], Math.min(a + 7, W - 90), b2 + 3); }
+    }
     // sight radius ring
     c.strokeStyle = 'rgba(255,255,255,0.15)'; c.lineWidth = 1; c.beginPath(); c.arc(W / 2, W / 2, sight / span * W, 0, Math.PI * 2); c.stroke();
     for (const b of g.fleet.boats) if (b !== pl) dot(b.x, b.z, '#ff8a2a', 3.5);
@@ -189,6 +204,34 @@ export class UI {
       <div class="recipes">${rows}</div>`;
     for (const el of document.querySelectorAll('#craft-body [data-boat]')) el.onclick = () => { this.craftBoat = fleet.boats[+el.dataset.boat]; this.renderCraft(true); };
     for (const el of document.querySelectorAll('#craft-body [data-recipe]')) el.onclick = () => { g.craft(el.dataset.recipe, this.craftBoat); this.renderCraft(true); };
+  }
+
+  showNote(title, text) {
+    $('note-title').textContent = title; $('note-text').textContent = text;
+    $('note').style.display = 'block';
+  }
+
+  toggleJournal(force) {
+    const el = $('journal');
+    const show = force !== undefined ? force : el.style.display !== 'block';
+    el.style.display = show ? 'block' : 'none';
+    if (!show) return;
+    const L = this.game.landmarks, env = this.game.env;
+    const found = L.list.filter((l) => l.discovered);
+    const rows = found.map((lm) => {
+      let status;
+      if (!L.reachable(lm)) {
+        const day = L.dayForLevel(lm.reachLevel);
+        status = `<span class="warn">Out of reach</span> — the boats can get in once the flood reaches ${lm.reachLevel.toFixed(1)} m (now ${env.level.toFixed(1)} m)${day ? `, around day ${day}` : ''}.`;
+      } else status = lm.visited ? 'Explored.' : '<span class="warn">Reachable — not yet explored.</span>';
+      if (lm.group) status += lm.rescued ? ' Its people are accounted for.' : ' Someone may still be there.';
+      if (lm.action && lm.visited) status += ` <span class="dim">${lm.action.desc}</span>`;
+      const note = lm.visited ? `<div class="jnote"><b>${lm.note.title}</b><p>${lm.note.text}</p></div>` : '';
+      return `<div class="jentry"><div class="big">${lm.name}</div><div>${status}</div>${note}</div>`;
+    }).join('');
+    const unknown = L.list.length - found.length;
+    $('journal-body').innerHTML = (rows || '<p class="dim">Nothing yet. Tall things on the skyline are worth sailing toward.</p>') +
+      (unknown ? `<p class="dim">${unknown} more landmark${unknown > 1 ? 's' : ''} somewhere out there.</p>` : '');
   }
 
   showGameOver(reason) {

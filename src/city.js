@@ -15,7 +15,8 @@ const CONTAINER_COLORS = [0xb33a2e, 0x2e5fa3, 0x2f8a52, 0xd19a2a, 0x6b6f75, 0xa3
  * collider { minx, maxx, minz, maxz, top } stored in a uniform spatial hash.
  */
 export class City {
-  constructor(scene, uniforms, floorMap) {
+  constructor(scene, uniforms, floorMap, reserved = []) {
+    this.reserved = reserved; // rects kept clear for landmarks
     this.colliders = [];
     this.grid = new Map();
     this.cell = 40;
@@ -61,6 +62,7 @@ export class City {
         const x0 = bx + STREET / 2, x1 = bx + BLOCK - STREET / 2;
         const z0 = bz - BLOCK + STREET / 2, z1 = bz - STREET / 2;
         const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+        if (this.reserved.some((r) => x1 + STREET > r.minx && x0 - STREET < r.maxx && z1 + STREET > r.minz && z0 - STREET < r.maxz)) continue;
         const hs = [groundHeight(x0, z0), groundHeight(x1, z0), groundHeight(x0, z1), groundHeight(x1, z1)];
         if (Math.max(...hs) - Math.min(...hs) > 10) continue;
         this.scatterCars(rng, bx, bz, BLOCK, STREET);
@@ -185,6 +187,7 @@ export class City {
     // Piers with pilings.
     for (let x = -600; x <= 600; x += 100) {
       if (Math.abs(x) < 40) continue;
+      if (this.reserved.some((r) => x + 4 > r.minx && x - 4 < r.maxx && 92 > r.minz && 2 < r.maxz)) continue;
       const len = rand(rng, 45, 90);
       this.box(this.plain, x - 4, x + 4, 1.5, 2.1, 2, 2 + len, 0x6b5640);
       for (let z = 6; z < len; z += 8) {

@@ -61,6 +61,14 @@
   .ritem.hot { transform: scale(1.12); background: rgba(70,52,24,0.95); border-color: #ffcf8a; }
   .ritem.accent { border-color: #ffcf8a; }
   .ritem.off { opacity: 0.38; }
+  #note { display: none; position: absolute; left: 50%; top: 18%; transform: translateX(-50%); width: min(520px, 90vw); pointer-events: auto; background: rgba(28,24,18,0.94); border-color: rgba(255,207,138,0.4); padding: 16px 20px; font-size: 14px; }
+  #note p { font-family: Georgia, 'Times New Roman', serif; font-size: 15px; line-height: 1.6; color: #efe6d4; margin: 10px 0 0; }
+  #note-close, #journal-close { position: absolute; right: 12px; top: 10px; }
+  #journal { display: none; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(640px, 92vw); max-height: 80vh; overflow: auto; pointer-events: auto; background: rgba(8,16,22,0.94); padding: 16px 20px; }
+  #journal h2 { margin: 0 0 10px; font-weight: 500; }
+  .jentry { padding: 10px 0; border-top: 1px solid rgba(160,200,220,0.15); }
+  .jnote { margin-top: 6px; padding: 8px 10px; background: rgba(255,240,210,0.05); border-left: 2px solid #b8a07a; }
+  .jnote p { font-family: Georgia, serif; margin: 4px 0 0; color: #e6dccb; }
   #gameover { display: none; }
   #gameover h2 { font-size: 40px; font-weight: 300; letter-spacing: 6px; }
   #gameover p { max-width: 560px; text-align: center; line-height: 1.6; }
@@ -74,6 +82,8 @@
 <div id="hud-boat" class="panel"></div>
 <div id="hud-fleet" class="panel"></div>
 <div id="prompt"></div>
+<div id="note" class="panel"><button id="note-close">Close</button><div class="big" id="note-title"></div><p id="note-text"></p></div>
+<div id="journal" class="panel"><button id="journal-close">Close (J)</button><h2>Journal</h2><div id="journal-body"></div></div>
 <div id="radial"><div id="radial-center"></div></div>
 <div id="toasts"></div>
 
@@ -83,6 +93,7 @@
     <b>W / S</b><span>Throttle lever up / down (astern below zero) · Space: all stop</span>
     <b>A / D</b><span>Rudder</span>
     <b>R</b><span>Raise / furl sails (no drive within ~35° of the wind)</span>
+    <b>J</b><span>Journal: landmarks found, notes read, when the flood will open the rest</span>
     <b>V</b><span>Walk the deck / take the helm. On foot: WASD walk (camera-relative), Shift hurry, E pet animals</span>
     <b>E</b><span>Interact: rescue, haul rooftop caches, crew derelicts, hail boats</span>
     <b>X</b><span>Salvage a derelict for materials</span>
