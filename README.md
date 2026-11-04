@@ -18,7 +18,7 @@ npm install
 npm run dev
 ```
 
-Open the printed URL. Append `?q=low` for a low-quality mode (no shadows, reduced resolution) on weak GPUs.
+Open the printed URL. High quality is the default: planar water reflections, MSAA, bloom, a sky-baked environment map, 4096 px shadows. Append `?q=low` for a low-quality mode (none of those, reduced resolution) on weak GPUs.
 
 ## Controls
 
@@ -41,7 +41,9 @@ Open the printed URL. Append `?q=low` for a low-quality mode (no shadows, reduce
 
 ## Systems
 
-- **Flood.** Water level follows a 14-day curve to about 75 m, plus tide and rain surge. Buildings and terrain are static; the water rises over them. Below-waterline surfaces are tinted and the band just above the waterline is wet-stained. City lights go out as the days pass.
+- **Pacing.** A game day lasts 20 real minutes. The game opens with the low harbor district already under about 4 m of water, then rises only a few centimetres per hour at first; it reaches about 75 m after roughly two in-game months. Survivors, supplies and derelict boats are sparse and spaced out by timers, derelicts are badly damaged (sluggish and waterlogged until repaired), and every repeat of a module on the same boat costs 1.7× the previous one.
+- **Exploration.** The minimap shows only what your crew has spotted (sight range shrinks at night and in fog, grows with lookouts); spotted things stay marked.
+- **Flood.** Plus tide and rain surge. Buildings and terrain are static; the water rises over them. Below-waterline surfaces are tinted and the band just above the waterline is wet-stained. City lights go out as the days pass.
 - **Water.** Gerstner waves. The four longest waves displace the mesh, and the same function runs on the CPU, so boats ride the waves you see. Shorter waves and wind/rain ripples only affect shading. A baked floor heightmap (terrain + building tops) damps waves in shallow water and draws foam around shores, walls and submerged roofs.
 - **Weather.** Clear, overcast, fog, rain and storm, as a Markov chain. Storms become more likely as days pass. Wind direction drifts and gusts, and sea state scales with wind. Includes a day/night cycle, moon, stars, a moving cloud layer, lightning with delayed thunder, and rain.
 - **Boats.** Ten archetypes (raft, rowboat, skiff, sloop, trawler, tug, motor yacht, houseboat, barge, schooner, plus raiders). Each hull is lofted from randomized parameters: length, beam, draft, freeboard, bow fineness, deadrise and section shape. Physics: engine thrust (uses fuel), sail force from the apparent-wind angle (no-go zone, best on a reach, heel, gale damage if sails stay up), rowing fallback, quadratic drag with hull-speed limit for displacement hulls, and spring buoyancy for heave/pitch/roll from 5 wave samples. Boats collide with buildings, shoals, submerged roofs, shore, and each other.

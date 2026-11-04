@@ -6,19 +6,34 @@ export const RESOURCES = ['wood', 'scrap', 'cloth', 'parts', 'fuel', 'food', 'wa
 export const RES_LABEL = { wood: 'Wood', scrap: 'Scrap', cloth: 'Cloth', parts: 'Parts', fuel: 'Fuel', food: 'Food', water: 'Water' };
 
 export const RECIPES = [
-  { id: 'patch', label: 'Patch Hull', cost: { wood: 3, scrap: 1 }, desc: 'Restore 35 hull integrity now.' },
+  { id: 'patch', label: 'Patch Hull', cost: { wood: 4, scrap: 2 }, desc: 'Restore 20 hull integrity now. Bigger hulls need more material.' },
   ...Object.keys(MODULES).map((m) => ({ id: m, module: m, label: MODULES[m].label, desc: MODULES[m].desc, cost: MODULE_COST(m) })),
-  { id: 'lengthen', label: 'Lengthen Hull +1.5 m', cost: { wood: 14, scrap: 4 }, desc: 'Rebuilds the hull longer: more slots, berths, cargo, speed.' },
-  { id: 'raft', label: 'Build Raft', cost: { wood: 18, cloth: 3 }, newBoat: 'raft', desc: 'New boat for the floatilla. Needs a spare crew member.' },
-  { id: 'rowboat', label: 'Build Rowboat', cost: { wood: 26, scrap: 3 }, newBoat: 'rowboat', desc: 'New boat for the floatilla. Needs a spare crew member.' },
-  { id: 'biofuel', label: 'Wood-gas Fuel', cost: { wood: 6 }, gives: { fuel: 3 }, desc: 'Crude gasifier: wood → 3 fuel.' },
-  { id: 'boil', label: 'Boil Seawater', cost: { wood: 3 }, gives: { water: 4 }, desc: 'Burn wood to distil 4 water.' },
+  { id: 'lengthen', label: 'Lengthen Hull +1.5 m', cost: { wood: 30, scrap: 10 }, desc: 'Rebuilds the hull longer: more slots, berths, cargo, speed. Each extension costs more.' },
+  { id: 'raft', label: 'Build Raft', cost: { wood: 40, cloth: 8 }, newBoat: 'raft', desc: 'New boat for the floatilla. Needs a spare crew member.' },
+  { id: 'rowboat', label: 'Build Rowboat', cost: { wood: 65, scrap: 10 }, newBoat: 'rowboat', desc: 'New boat for the floatilla. Needs a spare crew member.' },
+  { id: 'biofuel', label: 'Wood-gas Fuel', cost: { wood: 8 }, gives: { fuel: 3 }, desc: 'Crude gasifier: wood → 3 fuel.' },
+  { id: 'boil', label: 'Boil Seawater', cost: { wood: 4 }, gives: { water: 4 }, desc: 'Burn wood to distil 4 water.' },
 ];
+
+/**
+ * Actual cost of a recipe for a given boat. Each repeat of the same module on a
+ * boat costs 1.7x the previous one and bigger hulls need more material, so
+ * fully kitting out one boat is a long project.
+ */
+export function recipeCost(r, boat) {
+  let k = 1;
+  if (r.module) k = Math.pow(1.7, boat.count(r.module)) * Math.max(1, Math.sqrt(boat.L / 6));
+  else if (r.id === 'patch') k = Math.max(1, boat.maxHp / 120);
+  else if (r.id === 'lengthen') k = Math.pow(1.5, boat.design.lengthened || 0);
+  const out = {};
+  for (const [res, n] of Object.entries(r.cost)) out[res] = Math.ceil(n * k);
+  return out;
+}
 function MODULE_COST(m) {
   return {
-    sail: { wood: 6, cloth: 8 }, engine: { scrap: 10, parts: 4 }, storage: { wood: 6 }, shelter: { wood: 8, cloth: 5 },
-    armor: { scrap: 14 }, outrigger: { wood: 10, scrap: 2 }, net: { cloth: 5, scrap: 3 }, raincatch: { cloth: 3, scrap: 2 },
-    still: { scrap: 5, cloth: 2 }, planter: { wood: 4, food: 3 }, light: { scrap: 4, parts: 2 },
+    sail: { wood: 14, cloth: 18 }, engine: { scrap: 24, parts: 8 }, storage: { wood: 14 }, shelter: { wood: 18, cloth: 10 },
+    armor: { scrap: 30 }, outrigger: { wood: 22, scrap: 6 }, net: { cloth: 10, scrap: 6 }, raincatch: { cloth: 6, scrap: 4 },
+    still: { scrap: 10, cloth: 4 }, planter: { wood: 8, food: 6 }, light: { scrap: 10, parts: 4 },
   }[m];
 }
 
@@ -115,7 +130,7 @@ export class Fleet {
     this.game = game;
     this.boats = [];
     this.player = null;
-    this.inv = { wood: 8, scrap: 4, cloth: 4, parts: 1, fuel: 18, food: 16, water: 20 };
+    this.inv = { wood: 6, scrap: 3, cloth: 2, parts: 0, fuel: 14, food: 14, water: 18 };
     this.mode = 'follow';
     this.detached = false;
     this.trail = [];
@@ -269,15 +284,15 @@ export class Fleet {
     for (const b of this.boats) {
       const tc = b.taskCounts || {};
       const net = b.count('net');
-      this.give('food', (tc.fish || 0) * 0.22 * (1 + net * 0.9) * moraleK * dh);
+      this.give('food', (tc.fish || 0) * 0.15 * (1 + net * 0.9) * moraleK * dh);
       this.give('water', b.count('raincatch') * env.rainAmt * 3.0 * dh + b.count('still') * day * 0.45 * dh);
       this.give('food', b.count('planter') * day * 0.3 * dh);
       for (const a of b.animals) if (a.def.produces) this.give('food', a.def.produces * dh);
       shelters += b.count('shelter');
       if ((tc.repair || 0) > 0 && b.hp < b.maxHp && !b.sinking) {
-        const amount = Math.min(b.maxHp - b.hp, tc.repair * 14 * dh * moraleK);
+        const amount = Math.min(b.maxHp - b.hp, tc.repair * 5 * dh * moraleK);
         const res = this.inv.wood >= this.inv.scrap ? 'wood' : 'scrap';
-        const cost = amount * 0.08;
+        const cost = amount * 0.15;
         if (this.inv[res] >= cost) { this.inv[res] -= cost; b.hp += amount; }
       }
     }

@@ -1,4 +1,4 @@
-import { RESOURCES, RES_LABEL, RECIPES } from './fleet.js';
+import { RESOURCES, RES_LABEL, RECIPES, recipeCost } from './fleet.js';
 import { MODULES, KINDS } from './boat.js';
 import { clamp } from './util.js';
 
@@ -56,7 +56,8 @@ export class UI {
       <div class="bar"><div style="width:${Math.abs(b.throttle) * 100}%;background:${b.throttle < 0 ? '#c07040' : '#5fa8d8'}"></div><span>Throttle ${b.throttle < 0 ? 'astern ' : ''}${Math.round(Math.abs(b.throttle) * 100)}%</span></div>
       <div>${kn} kn · ${prop}</div>
       <div>Sails: ${sails}</div>
-      <div>Crew ${b.crew.length}/${b.maxCrew} · slots ${b.usedSlots}/${b.slots}${b.anchored ? ' · anchored' : ''}${b.grounded ? ' · <span class="warn">AGROUND</span>' : ''}</div>`;
+      <div>Crew ${b.crew.length}/${b.maxCrew} · slots ${b.usedSlots}/${b.slots}${b.anchored ? ' · anchored' : ''}${b.grounded ? ' · <span class="warn">AGROUND</span>' : ''}</div>
+      ${b.waterlogged > 0.05 ? `<div class="warn">Waterlogged ${Math.round(b.waterlogged * 100)}% — repair the hull to regain speed</div>` : ''}`;
 
     const cap = fleet.capacity, load = fleet.load;
     $('hud-res').innerHTML = `<div class="big">Stores <span class="dim">${Math.round(load)}/${cap}</span></div>` +
@@ -120,12 +121,24 @@ export class UI {
     c.drawImage(this.mapCanvas, sx, sz, span / mPerPx, span / mPerPx, 0, 0, W, W);
     const toS = (x, z) => [(x - pl.x + span / 2) / span * W, (z - pl.z + span / 2) / span * W];
     const dot = (x, z, col, r) => { const [a, b] = toS(x, z); if (a < 0 || b < 0 || a > W || b > W) return; c.fillStyle = col; c.beginPath(); c.arc(a, b, r, 0, Math.PI * 2); c.fill(); };
-    const w = g.world;
-    for (const p of w.pickups) dot(p.x, p.z, '#e8d070', 1.6);
-    for (const k of w.caches) dot(k.x, k.z, '#60b0ff', 3);
+    const w = g.world, env = g.env;
+    // Only what the crew has actually spotted appears on the chart. Spotted things stay marked.
+    const lookouts = g.fleet.boats.reduce((a, b) => a + (b.taskCounts?.lookout || 0), 0);
+    const sight = 320 * (1 + Math.min(2, lookouts) * 0.25) * (1 - env.night * 0.55) * clamp(env.cur.fog / 900, 0.3, 1);
+    this.sight = sight;
+    const seen = (e, range) => {
+      let s = e.seen;
+      for (const b of g.fleet.boats) if (!s && Math.hypot(e.x - b.x, e.z - b.z) < range) s = true;
+      return (e.seen = s);
+    };
+    for (const p of w.pickups) if (seen(p, Math.min(sight, 140))) dot(p.x, p.z, '#e8d070', 1.6);
+    for (const k of w.caches) if (seen(k, sight)) dot(k.x, k.z, '#60b0ff', 3);
     const pulse = 3 + Math.sin(performance.now() * 0.006) * 1.2;
-    for (const s of w.groups) dot(s.x, s.z, s.state === 'swim' ? '#ff3030' : '#ff7050', s.people.length ? pulse : 2.5);
-    for (const b of w.boats) if (!b.fleet) dot(b.x, b.z, b.role === 'raider' ? '#000' : b.role === 'npc' ? '#fff' : '#9a9a9a', 3.5);
+    // survivors with a flag (or a flare at night) are visible from further away
+    for (const s of w.groups) if (seen(s, sight * (s.people.length ? 1.6 : 0.8))) dot(s.x, s.z, s.state === 'swim' ? '#ff3030' : '#ff7050', s.people.length ? pulse : 2.5);
+    for (const b of w.boats) if (!b.fleet && seen(b, sight * 1.2)) dot(b.x, b.z, b.role === 'raider' ? '#000' : b.role === 'npc' ? '#fff' : '#9a9a9a', 3.5);
+    // sight radius ring
+    c.strokeStyle = 'rgba(255,255,255,0.15)'; c.lineWidth = 1; c.beginPath(); c.arc(W / 2, W / 2, sight / span * W, 0, Math.PI * 2); c.stroke();
     for (const b of g.fleet.boats) if (b !== pl) dot(b.x, b.z, '#ff8a2a', 3.5);
     // player arrow
     c.save(); c.translate(W / 2, W / 2); c.rotate(-pl.heading + Math.PI);
@@ -165,8 +178,9 @@ export class UI {
       if (r.id === 'patch' && b.hp >= b.maxHp - 1) why = 'Hull intact';
       if (r.id === 'lengthen') { const K = KINDS[b.design.kind]; if (b.design.kind === 'raft') why = 'Rafts can’t be lengthened'; else if (b.L > K.L[1] * 1.5) why = 'Hull at max length'; }
       if (r.newBoat && !spare) why = 'Needs a spare crew member';
-      const afford = fleet.canAfford(r.cost);
-      const cost = Object.entries(r.cost).map(([k, v]) => `<span class="${fleet.inv[k] >= v ? '' : 'short'}">${v} ${k}</span>`).join(' ');
+      const rc = recipeCost(r, b);
+      const afford = fleet.canAfford(rc);
+      const cost = Object.entries(rc).map(([k, v]) => `<span class="${fleet.inv[k] >= v ? '' : 'short'}">${v} ${k}</span>`).join(' ');
       return `<div class="recipe ${why || !afford ? 'off' : ''}"><div><b>${r.label}</b><div class="dim">${r.desc}</div></div>
         <div class="cost">${cost}</div><button data-recipe="${r.id}" ${why || !afford ? 'disabled' : ''}>${why || (afford ? 'Build' : 'Need more')}</button></div>`;
     }).join('');

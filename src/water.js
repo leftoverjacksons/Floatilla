@@ -48,6 +48,7 @@ export class Water {
       uShallow: { value: new THREE.Color(0.08, 0.26, 0.26) },
       uMurk: { value: new THREE.Color(0.17, 0.17, 0.1) },
       uRing: { value: 0 },
+      uRefl: { value: null }, uReflMatrix: { value: new THREE.Matrix4() }, uReflOn: { value: 0 },
       ...THREE.UniformsLib.fog,
     };
     const matNear = new THREE.ShaderMaterial({
@@ -118,6 +119,52 @@ export class Water {
   }
 
   depthAt(x, z) { return this.level - this.floorMap.floorAt(x, z); }
+
+  /**
+   * Planar reflection: render the scene from the camera mirrored in the plane
+   * y = level, clipped to what lies above the water, into a half-res target.
+   * The water shader projects each fragment through the same mirrored camera.
+   */
+  enableReflections(renderer) {
+    const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+    this.reflRT = new THREE.WebGLRenderTarget(Math.max(1, size.x >> 1), Math.max(1, size.y >> 1), { type: THREE.HalfFloatType, samples: 2 });
+    this.reflCam = new THREE.PerspectiveCamera();
+    this.clipPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    this.uniforms.uRefl.value = this.reflRT.texture;
+    this.uniforms.uReflOn.value = 1;
+    this.hideInReflection = [];
+  }
+  resizeReflections(renderer) {
+    if (!this.reflRT) return;
+    const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+    this.reflRT.setSize(Math.max(1, size.x >> 1), Math.max(1, size.y >> 1));
+  }
+  renderReflection(renderer, scene, camera) {
+    if (!this.reflRT) return;
+    const L = this.level;
+    const rc = this.reflCam;
+    rc.fov = camera.fov; rc.aspect = camera.aspect; rc.near = camera.near; rc.far = camera.far; rc.updateProjectionMatrix();
+    const dir = camera.getWorldDirection(new THREE.Vector3());
+    rc.position.set(camera.position.x, 2 * L - camera.position.y, camera.position.z);
+    rc.up.set(0, 1, 0);
+    rc.lookAt(rc.position.x + dir.x, rc.position.y - dir.y, rc.position.z + dir.z);
+    rc.updateMatrixWorld();
+    this.uniforms.uReflMatrix.value.multiplyMatrices(rc.projectionMatrix, rc.matrixWorldInverse);
+    this.clipPlane.constant = -(L - 0.4);
+    const hidden = [this.near, this.far, ...this.hideInReflection];
+    const vis = hidden.map((o) => o.visible);
+    hidden.forEach((o) => (o.visible = false));
+    const prevTarget = renderer.getRenderTarget(), prevClip = renderer.clippingPlanes, prevAuto = renderer.shadowMap.autoUpdate;
+    renderer.shadowMap.autoUpdate = false;
+    renderer.clippingPlanes = [this.clipPlane];
+    renderer.setRenderTarget(this.reflRT);
+    renderer.clear();
+    renderer.render(scene, rc);
+    renderer.setRenderTarget(prevTarget);
+    renderer.clippingPlanes = prevClip;
+    renderer.shadowMap.autoUpdate = prevAuto;
+    hidden.forEach((o, i) => (o.visible = vis[i]));
+  }
 }
 
 const VERT = /* glsl */`
@@ -156,6 +203,7 @@ uniform vec2 uCenter, uWind;
 uniform vec4 uWaves[7];
 uniform float uOmega[7];
 uniform vec3 uSunDir, uSunColor, uSkyColor, uHorizon, uDeep, uShallow, uMurk;
+uniform sampler2D uRefl; uniform mat4 uReflMatrix; uniform float uReflOn;
 varying vec3 vWorld; varying vec2 vP0; varying float vAtten; varying float vDepth;
 #include <common>
 #include <fog_pars_fragment>
@@ -186,13 +234,26 @@ void main(){
     float ring = abs(length(fq) - t * 0.4);
     rr = (1.0 - smoothstep(0.0, 0.04, ring)) * (1.0 - t) * step(0.4, h21(id + 0.37)) * uRain * 0.6;
   }
-  n = normalize(n + vec3(-(rx - r0) / e, 0.0, -(rz - r0) / e) * rs + vec3(rr * 0.6, 0.0, rr * 0.4));
+  // fine second ripple octave
+  vec2 rp2 = vWorld.xz * 1.6 - uWind.yx * uTime * 0.4;
+  float q0 = vnoise(rp2), qx = vnoise(rp2 + vec2(e, 0.0)), qz = vnoise(rp2 + vec2(0.0, e));
+  n = normalize(n + vec3(-(rx - r0) / e, 0.0, -(rz - r0) / e) * rs + vec3(-(qx - q0) / e, 0.0, -(qz - q0) / e) * rs * 0.45 + vec3(rr * 0.6, 0.0, rr * 0.4));
+  // soften detail with distance: stands in for normal-map mipmapping, kills sparkle aliasing
+  float camDist = length(cameraPosition - vWorld);
+  n = normalize(mix(n, vec3(0.0, 1.0, 0.0), smoothstep(120.0, 1400.0, camDist) * 0.75));
 
   vec3 V = normalize(cameraPosition - vWorld);
   float ndv = max(dot(n, V), 0.0);
   float fres = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);
   vec3 R = reflect(-V, n);
   vec3 sky = mix(uHorizon, uSkyColor, clamp(R.y * 1.6, 0.0, 1.0));
+  if (uReflOn > 0.5) {
+    vec4 rc = uReflMatrix * vec4(vWorld.x, uLevel, vWorld.z, 1.0);
+    vec2 ruv = rc.xy / rc.w * 0.5 + 0.5;
+    ruv += n.xz * (0.035 / (1.0 + camDist * 0.004));
+    vec3 refl = texture2D(uRefl, clamp(ruv, 0.001, 0.999)).rgb;
+    sky = refl;
+  }
 
   float depthF = smoothstep(0.0, 14.0, vDepth);
   vec3 wc = mix(uShallow, uDeep, depthF);

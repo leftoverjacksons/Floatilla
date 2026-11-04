@@ -130,7 +130,7 @@ function buildHullGeometry(d) {
 
 /** Deck/floor surface: at height y, bounded by the hull's inner width at that height. */
 function buildDeckGeometry(d, sections, deckY) {
-  const pos = [], idx = [];
+  const pos = [], idx = [], uv = [];
   let rows = 0;
   for (const s of sections) {
     const y = Math.min(deckY, s.prof.top - 0.06);
@@ -144,13 +144,61 @@ function buildDeckGeometry(d, sections, deckY) {
     }
     w = Math.max(0, w - 0.02);
     pos.push(w, y, s.z, -w, y, s.z);
+    uv.push(w / 1.2, s.z / 4, -w / 1.2, s.z / 4);
     rows++;
   }
   for (let i = 0; i < rows - 1; i++) { const a = i * 2; idx.push(a, a + 1, a + 3, a, a + 3, a + 2); }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
   geo.setIndex(idx); geo.computeVertexNormals();
   return geo;
+}
+
+/**
+ * Invisible lid across the hull opening at gunwale height. It writes depth only
+ * and is drawn after the boat but before the water, so the water surface cannot
+ * show through the inside of an open hull.
+ */
+function buildWaterMask(sections) {
+  const pos = [], idx = [];
+  sections.forEach((s, i) => {
+    const hw = s.prof.hw, top = s.prof.top - 0.02;
+    pos.push(hw, top, s.z, -hw, top, s.z);
+    if (i > 0) { const a = (i - 1) * 2; idx.push(a, a + 1, a + 3, a, a + 3, a + 2); }
+  });
+  // close the transom and blunt bows with a fan so the lid has no gaps
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  return geo;
+}
+export const WATER_MASK_MAT = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: true, transparent: true, side: THREE.DoubleSide });
+
+// Procedural plank texture for decks (canvas, tinted by the material colour).
+let PLANK_TEX = null;
+function plankTexture() {
+  if (PLANK_TEX) return PLANK_TEX;
+  const c = document.createElement('canvas'); c.width = 256; c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#d8d8d8'; g.fillRect(0, 0, 256, 256);
+  const n = 8, w = 256 / n;
+  for (let i = 0; i < n; i++) {
+    const shade = 200 + Math.floor(Math.random() * 50);
+    g.fillStyle = `rgb(${shade},${shade},${shade})`; g.fillRect(i * w + 1, 0, w - 2, 256);
+    for (let k = 0; k < 14; k++) { // grain
+      g.strokeStyle = `rgba(90,90,90,${0.05 + Math.random() * 0.08})`; g.lineWidth = 1;
+      const x = i * w + 2 + Math.random() * (w - 4);
+      g.beginPath(); g.moveTo(x, 0); g.bezierCurveTo(x + 3, 80, x - 3, 170, x + 1, 256); g.stroke();
+    }
+    g.fillStyle = 'rgba(40,40,40,0.55)'; g.fillRect(i * w, 0, 1.5, 256); // seams
+    const off = Math.random() * 256; g.fillRect(i * w, off, w, 1.5); // butt joint
+  }
+  PLANK_TEX = new THREE.CanvasTexture(c);
+  PLANK_TEX.wrapS = PLANK_TEX.wrapT = THREE.RepeatWrapping;
+  PLANK_TEX.colorSpace = THREE.SRGBColorSpace;
+  PLANK_TEX.anisotropy = 8;
+  return PLANK_TEX;
 }
 
 // ---------------------------------------------------------------------------
@@ -160,7 +208,8 @@ const BOX = new THREE.BoxGeometry(1, 1, 1);
 const CYL = new THREE.CylinderGeometry(1, 1, 1, 10);
 const mats = new Map();
 function M(hex, opts = {}) {
-  const key = hex + JSON.stringify(opts);
+  const { map, ...rest } = opts;
+  const key = hex + JSON.stringify(rest) + (map ? map.uuid : '');
   let m = mats.get(key);
   if (!m) { m = new THREE.MeshStandardMaterial({ color: hex, roughness: 0.75, ...opts }); mats.set(key, m); }
   return m;
@@ -269,8 +318,10 @@ export class Boat {
       const { geo, sections } = buildHullGeometry(d);
       const hull = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, side: THREE.DoubleSide }));
       hull.castShadow = true; hull.receiveShadow = true; body.add(hull);
-      const deck = new THREE.Mesh(buildDeckGeometry(d, sections, this.deckY), M(d.deckColor, { side: THREE.DoubleSide, roughness: 0.9 }));
+      const deck = new THREE.Mesh(buildDeckGeometry(d, sections, this.deckY), M(d.deckColor, { side: THREE.DoubleSide, roughness: 0.85, map: plankTexture() }));
       deck.receiveShadow = true; body.add(deck);
+      const mask = new THREE.Mesh(buildWaterMask(sections), WATER_MASK_MAT);
+      mask.renderOrder = 0.5; mask.frustumCulled = false; body.add(mask);
       this.sections = sections;
     }
     const dy = this.deckY;
@@ -690,7 +741,9 @@ export class Boat {
     let Fwx = W.x * Math.abs(W.x) * windForce * 0.05, Fwz = W.y * Math.abs(W.y) * windForce * 0.05;
 
     // Drag.
-    let du = this.cF * (u * Math.abs(u) + 1.5 * u);
+    // A badly holed hull is half full of water: heavy and sluggish until repaired.
+    this.waterlogged = clamp(1 - this.hp / (this.maxHp * 0.5), 0, 1);
+    let du = this.cF * (u * Math.abs(u) + 1.5 * u) * (1 + 3 * this.waterlogged);
     const au = Math.abs(u);
     if (au > this.hullSpeed) du += Math.sign(u) * this.cF * 5 * (au - this.hullSpeed) ** 2;
     Fu -= du;
@@ -759,7 +812,7 @@ export class Boat {
     [this.y, this.vy] = spring(this.y, this.vy, ty, w0);
     [this.pitch, this.vp] = spring(this.pitch, this.vp, clamp(tp, -0.5, 0.5), w0 * 0.9);
     [this.roll, this.vr] = spring(this.roll, this.vr, clamp(tr, -0.7, 0.7), w0 * 0.8);
-    if (Math.abs(this.y - ty) > 5) { this.y = ty; this.vy = 0; }
+    if (!this.settled || Math.abs(this.y - ty) > 5) { this.y = ty; this.vy = 0; this.pitch = 0; this.roll = 0; this.settled = true; }
 
     this.root.position.set(this.x, this.y, this.z);
     this.root.rotation.set(-this.pitch, this.heading, this.roll);

@@ -6,14 +6,14 @@ import { steerBoat } from './fleet.js';
 import { rectDistance } from './city.js';
 
 const PICKUPS = {
-  planks: { label: 'Planks', w: 5, give: (r) => ({ wood: randInt(r, 2, 5) }) },
-  crate: { label: 'Crate', w: 4, give: (r) => ({ wood: randInt(r, 0, 2), scrap: randInt(r, 1, 3), cloth: randInt(r, 0, 2), parts: r() < 0.45 ? 1 : 0 }) },
-  barrel: { label: 'Fuel drum', w: 2.5, give: (r) => ({ fuel: randInt(r, 3, 8) }) },
-  bundle: { label: 'Cloth bundle', w: 2.5, give: (r) => ({ cloth: randInt(r, 2, 4) }) },
-  food: { label: 'Food crate', w: 3, give: (r) => ({ food: randInt(r, 3, 7) }) },
-  water: { label: 'Water jugs', w: 3, give: (r) => ({ water: randInt(r, 4, 8) }) },
-  junk: { label: 'Scrap', w: 3, give: (r) => ({ scrap: randInt(r, 2, 4), parts: r() < 0.25 ? 1 : 0 }) },
-  log: { label: 'Driftwood', w: 3, give: (r) => ({ wood: randInt(r, 3, 6) }) },
+  planks: { label: 'Planks', w: 5, give: (r) => ({ wood: randInt(r, 1, 3) }) },
+  crate: { label: 'Crate', w: 3, give: (r) => ({ wood: randInt(r, 0, 1), scrap: randInt(r, 1, 2), cloth: r() < 0.4 ? 1 : 0, parts: r() < 0.2 ? 1 : 0 }) },
+  barrel: { label: 'Fuel drum', w: 1.5, give: (r) => ({ fuel: randInt(r, 2, 5) }) },
+  bundle: { label: 'Cloth bundle', w: 2, give: (r) => ({ cloth: randInt(r, 1, 3) }) },
+  food: { label: 'Food crate', w: 2.5, give: (r) => ({ food: randInt(r, 2, 5) }) },
+  water: { label: 'Water jugs', w: 2.5, give: (r) => ({ water: randInt(r, 3, 6) }) },
+  junk: { label: 'Scrap', w: 3, give: (r) => ({ scrap: randInt(r, 1, 3), parts: r() < 0.1 ? 1 : 0 }) },
+  log: { label: 'Driftwood', w: 3, give: (r) => ({ wood: randInt(r, 2, 4) }) },
 };
 const PICKUP_KEYS = Object.keys(PICKUPS);
 const ROOF_KINDS = new Set(['house', 'building', 'tower', 'pier', 'containers', 'quay', 'breakwater']);
@@ -50,6 +50,9 @@ export class World {
     this.pickups = []; this.groups = []; this.caches = []; this.boats = []; this.jumpers = [];
     this.timer = 0;
     this.raiderTimer = 60;
+    // Spawn timers in game hours: discoveries are rare and spaced out.
+    this.groupTimer = 0.5; this.cacheTimer = 1; this.derelictTimer = 2; this.npcTimer = 30;
+    this.lastHours = null;
     this.markerGeo = new THREE.ConeGeometry(0.5, 1.2, 4);
   }
 
@@ -101,7 +104,7 @@ export class World {
     const rng = this.rng;
     const roof = c ? c.roof : null;
     const g = { kind: c ? 'roof' : 'float', c, people: [], animals: [], state: c ? 'roof' : 'float', timer: 0, x: 0, z: 0, extras: new THREE.Group() };
-    let n = opts.people ?? (rng() < 0.2 ? 0 : randInt(rng, 1, 3));
+    let n = opts.people ?? (() => { const r = rng(); return r < 0.15 ? 0 : r < 0.72 ? 1 : r < 0.95 ? 2 : 3; })();
     let animal = opts.animal ?? (n === 0 || rng() < 0.3 ? pick(rng, Object.keys(ANIMALS)) : null);
     if (c) {
       g.x = (roof.minx + roof.maxx) / 2; g.z = (roof.minz + roof.maxz) / 2; g.y = roof.top;
@@ -201,7 +204,7 @@ export class World {
       const g = this.groups[i];
       if (g.kind === 'roof') {
         if (g.state === 'roof' && water.level > g.c.roof.top - 0.3) {
-          g.state = 'swim'; g.timer = 110;
+          g.state = 'swim'; g.timer = 200;
           if (g.people.length && Math.hypot(g.x - pl.x, g.z - pl.z) < 600) this.game.ui.toast('Water has swallowed a rooftop — survivors are in the water!', 'warn');
         }
       } else { g.x += ctx.wind.x * 0.02 * dt; g.z += ctx.wind.y * 0.02 * dt; }
@@ -268,66 +271,73 @@ export class World {
     // pickups
     for (let i = this.pickups.length - 1; i >= 0; i--) {
       const p = this.pickups[i];
-      if (Math.hypot(p.x - pl.x, p.z - pl.z) > 650) { this.scene.remove(p.mesh); this.pickups.splice(i, 1); }
+      if (Math.hypot(p.x - pl.x, p.z - pl.z) > 900) { this.scene.remove(p.mesh); this.pickups.splice(i, 1); }
     }
-    let tries = 6;
-    while (this.pickups.length < 55 && tries-- > 0) {
-      const pt = this.randomWaterPoint(pl.x, pl.z, 70, 420, 0.8, 1.5, 4);
+    const nowH = env.elapsedDays * 24;
+    const dh = this.lastHours === null ? 0 : Math.max(0, nowH - this.lastHours);
+    this.lastHours = nowH;
+    this.groupTimer -= dh; this.cacheTimer -= dh; this.derelictTimer -= dh; this.npcTimer -= dh;
+    // at most one new piece of flotsam every ~12 s, so a picked-over area stays picked over for a while
+    let tries = this.rng() < 0.08 ? 1 : 0;
+    while (this.pickups.length < 14 && tries-- > 0) {
+      const pt = this.randomWaterPoint(pl.x, pl.z, 160, 650, 0.8, 1.5, 4);
       if (pt) this.spawnPickup(pt.x, pt.z);
     }
     // survivor groups & caches on roofs near the waterline
     for (let i = this.groups.length - 1; i >= 0; i--) {
       const g = this.groups[i];
-      if (Math.hypot(g.x - pl.x, g.z - pl.z) > 1100) this.removeGroup(g, i, true);
+      if (Math.hypot(g.x - pl.x, g.z - pl.z) > 1400) this.removeGroup(g, i, true);
     }
-    const wantGroups = 7, wantCaches = 7;
     const roofGroups = this.groups.filter((g) => g.kind === 'roof').length;
-    if (roofGroups < wantGroups || this.caches.length < wantCaches) {
+    const wantGroup = roofGroups < 3 && this.groupTimer <= 0, wantCache = this.caches.length < 4 && this.cacheTimer <= 0;
+    if (wantGroup || wantCache) {
       const cands = [];
-      ctx.city.forEachNear(pl.x, pl.z, 700, (c) => {
+      ctx.city.forEachNear(pl.x, pl.z, 1000, (c) => {
         if (c.used || !ROOF_KINDS.has(c.kind)) return;
         const t = c.roof.top;
-        if (t < level + 0.6 || t > level + 5.5) return;
+        if (t < level + 0.6 || t > level + 12) return;
         const d = rectDistance(c.roof, pl.x, pl.z);
-        if (d < 110 || d > 700) return;
+        if (d < 220 || d > 1000) return;
         cands.push(c);
       });
-      for (let k = 0; k < 3 && cands.length; k++) {
-        const c = cands.splice(Math.floor(this.rng() * cands.length), 1)[0];
-        if (roofGroups + k < wantGroups && this.rng() < 0.6) this.spawnSurvivorGroup(c);
-        else if (this.caches.length < wantCaches) this.spawnCache(c);
+      if (cands.length) {
+        const c = cands[Math.floor(this.rng() * cands.length)];
+        if (wantGroup) { this.spawnSurvivorGroup(c); this.groupTimer = rand(this.rng, 3, 8); }
+        else { this.spawnCache(c); this.cacheTimer = rand(this.rng, 2, 5); }
       }
     }
-    if (this.groups.filter((g) => g.kind === 'float').length < 2 && this.rng() < 0.05) {
-      const pt = this.randomWaterPoint(pl.x, pl.z, 200, 500, 2, 3, 6);
+    if (this.groups.filter((g) => g.kind === 'float').length < 1 && this.rng() < 0.004) {
+      const pt = this.randomWaterPoint(pl.x, pl.z, 300, 700, 2, 3, 6);
       if (pt) this.spawnSurvivorGroup(null, { x: pt.x, z: pt.z });
     }
     for (let i = this.caches.length - 1; i >= 0; i--) {
       const c = this.caches[i];
-      if (Math.hypot(c.x - pl.x, c.z - pl.z) > 1100) { this.scene.remove(c.mesh); c.c.used = false; this.caches.splice(i, 1); }
+      if (Math.hypot(c.x - pl.x, c.z - pl.z) > 1400) { this.scene.remove(c.mesh); c.c.used = false; this.caches.splice(i, 1); }
     }
 
     // boats
     for (const b of [...this.boats]) {
       if (b.fleet) continue;
       const d = Math.hypot(b.x - pl.x, b.z - pl.z);
-      if (d > 1200 || (b.role === 'raider' && b.ai.fleeing && d > 600)) this.removeBoat(b);
+      if (d > 1500 || (b.role === 'raider' && b.ai.fleeing && d > 600)) this.removeBoat(b);
     }
     const free = this.boats.filter((b) => !b.fleet);
     const days = env.elapsedDays;
-    if (free.filter((b) => b.role === 'derelict').length < 4) {
+    if (free.filter((b) => b.role === 'derelict').length < 1 && this.derelictTimer <= 0) {
+      this.derelictTimer = rand(this.rng, 8, 18);
       const kind = this.randomDerelictKind(days);
       const K = KINDS[kind];
-      const pt = this.randomWaterPoint(pl.x, pl.z, 250, 650, K.draft[1] + 1.5, K.L[1] * 0.6 + 2, 6);
+      const pt = this.randomWaterPoint(pl.x, pl.z, 400, 900, K.draft[1] + 1.5, K.L[1] * 0.6 + 2, 8);
       if (pt) {
         const mods = [];
         if (this.rng() < 0.3) mods.push('storage');
         if (this.rng() < 0.25 && kind !== 'raider') mods.push('sail');
-        const b = this.spawnBoat(kind, pt.x, pt.z, 'derelict', { modules: mods, hpFrac: rand(this.rng, 0.35, 0.9) });
+        const b = this.spawnBoat(kind, pt.x, pt.z, 'derelict', { modules: mods, hpFrac: rand(this.rng, 0.12, 0.4) });
         b.anchored = false;
       }
     }
-    if (days > 0.6 && free.filter((b) => b.role === 'npc').length < (days > 3 ? 2 : 1) && this.rng() < 0.08) {
+    if (days > 2 && free.filter((b) => b.role === 'npc').length < 1 && this.npcTimer <= 0) {
+      this.npcTimer = rand(this.rng, 18, 40);
       const kind = pick(this.rng, ['rowboat', 'skiff', 'sailboat', 'fishing', 'houseboat', 'raft']);
       const pt = this.randomWaterPoint(pl.x, pl.z, 350, 700, KINDS[kind].draft[1] + 1.5, KINDS[kind].L[1] * 0.6 + 2, 6);
       if (pt) {
@@ -340,8 +350,8 @@ export class World {
     }
     // raiders
     this.raiderTimer -= env.timeScale;
-    if (days > 2.2 && this.raiderTimer <= 0) {
-      this.raiderTimer = rand(this.rng, 150, 400) / (env.night > 0.5 ? 2 : 1);
+    if (days > 7 && this.raiderTimer <= 0) {
+      this.raiderTimer = rand(this.rng, 900, 2400) / (env.night > 0.5 ? 1.5 : 1);
       if (free.filter((b) => b.role === 'raider').length < 2) {
         const pt = this.randomWaterPoint(pl.x, pl.z, 400, 600, 1.5, 6, 8);
         if (pt) {

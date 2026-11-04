@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { Sky } from 'three/addons/objects/Sky.js';
 import { clamp, lerp, smoothstep, damp, fbm, rand } from './util.js';
 
-export const DAY_SECONDS = 600; // real seconds per in-game day at 1x
+export const DAY_SECONDS = 1200; // real seconds per in-game day at 1x (20 minutes)
 
 const WEATHER = {
   clear: { cloud: 0.12, rain: 0, wind: 4.5, fog: 2400, label: 'Clear' },
@@ -21,8 +21,9 @@ const NEXT = {
 
 /** Flood curve: metres above the starting sea level after `days` game days. */
 export function floodLevel(days) {
-  const t = clamp(days / 14, 0, 1);
-  return 75 * (0.25 * t + 0.75 * t * t * (3 - 2 * t));
+  // Starts with the low harbor district already under ~4 m, then creeps up over ~two months.
+  const t = clamp(days / 60, 0, 1);
+  return 4 + 71 * (0.15 * t + 0.85 * t * t * (3 - 2 * t));
 }
 
 export class Environment {
@@ -211,7 +212,9 @@ export class Environment {
     else { this.sun.color.setRGB(0.6, 0.7, 1.0); this.sun.intensity = 0.6 * (1 - cloud * 0.8); }
     this.hemi.color.copy(new THREE.Color(0.35, 0.42, 0.62)).lerp(this.skyTop, day).lerp(new THREE.Color(0.75, 0.82, 0.9), 0.4 * day);
     this.hemi.groundColor.setRGB(0.12, 0.14, 0.12).multiplyScalar(0.4 + day);
-    this.hemi.intensity = 0.55 + 1.1 * day * (1 - cloud * 0.25);
+    this.hemi.intensity = (0.55 + 1.1 * day * (1 - cloud * 0.25)) * (this.scene.environment ? 0.55 : 1);
+    // Sky-baked environment light: dimmed under cloud (the baked sky has no clouds) and at night.
+    this.scene.environmentIntensity = (0.15 + 0.75 * day) * (1 - cloud * 0.6);
     this.flashLight.intensity = this.flash * 4;
     this.flashLight.position.copy(focus).add(new THREE.Vector3(30, 200, -40));
 

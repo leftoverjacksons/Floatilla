@@ -31,7 +31,7 @@ varying vec3 vFWP; varying vec3 vFWN;
 ${windows ? 'varying float vStyle;' : ''}
 ${GLSL_HASH}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
-float fLit = 0.0;
+float fLit = 0.0; float fWin = 0.0;
 ${windows ? `
 {
   vec3 n = normalize(vFWN);
@@ -49,6 +49,7 @@ ${windows ? `
     float r = fhash12(id + floor(vFWP.xz * 0.013) * 7.13);
     vec3 glass = vStyle < 1.5 ? vec3(0.09, 0.13, 0.17) : vec3(0.07, 0.08, 0.09);
     diffuseColor.rgb = mix(diffuseColor.rgb, glass, win * 0.85);
+    fWin = win * (vStyle < 1.5 ? 1.0 : 0.7) * step(uLevel, vFWP.y);
     fLit = win * step(1.0 - 0.3 * uPower, r) * step(uLevel + 2.0, vFWP.y) * (0.5 + fhash12(id * 1.37));
   }
 }` : ''}
@@ -56,6 +57,10 @@ float fUnder = clamp((uLevel - vFWP.y) / 5.0, 0.0, 1.0);
 diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.06, 0.11, 0.1), fUnder * 0.85);
 float fStain = (1.0 - step(uLevel + 1.6, vFWP.y)) * step(uLevel, vFWP.y) * smoothstep(uLevel + 1.6, uLevel, vFWP.y);
 diffuseColor.rgb *= 1.0 - fStain * 0.4;`)
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+roughnessFactor = mix(roughnessFactor, 0.06, fWin);`)
+      .replace('#include <metalnessmap_fragment>', `#include <metalnessmap_fragment>
+metalnessFactor = mix(metalnessFactor, 0.55, fWin);`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
 totalEmissiveRadiance += vec3(1.0, 0.72, 0.4) * fLit * smoothstep(0.3, 0.9, uNight) * 1.3;`);
   };

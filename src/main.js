@@ -1,12 +1,17 @@
 import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { Sky } from 'three/addons/objects/Sky.js';
 import { mulberry32, clamp, pick } from './util.js';
 import { FloorMap, buildTerrain } from './terrain.js';
 import { City } from './city.js';
 import { Water } from './water.js';
-import { Environment } from './environment.js';
+import { Environment, DAY_SECONDS } from './environment.js';
 import { Boat, randomDesign, KINDS } from './boat.js';
 import { Person, Animal } from './people.js';
-import { Fleet, RECIPES } from './fleet.js';
+import { Fleet, RECIPES, recipeCost } from './fleet.js';
 import { World } from './world.js';
 import { UI } from './ui.js';
 import { CameraController } from './camera.js';
@@ -32,6 +37,7 @@ class Game {
     window.addEventListener('resize', () => {
       this.camera.aspect = window.innerWidth / window.innerHeight; this.camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
+      if (this.composer) { this.composer.setSize(window.innerWidth, window.innerHeight); this.water.resizeReflections(renderer); }
     });
 
     // Shared uniforms for flood-aware materials (buildings, terrain, props).
@@ -42,6 +48,7 @@ class Game {
     this.water = new Water(this.scene, this.floorMap);
     this.env = new Environment(this.scene, renderer, this.rng);
     this.fx = new Fx(this.scene);
+    if (!low) this.setupHighQuality();
     this.audio = new Audio();
     this.env.onThunder = () => { this.audio.thunder(); this.camCtl.shake = 0.4; };
     this.camCtl = new CameraController(this.camera, renderer.domElement);
@@ -80,6 +87,40 @@ class Game {
     requestAnimationFrame(this.frame);
   }
 
+  /** Reflections, MSAA + bloom post-processing and a sky-lit environment map. */
+  setupHighQuality() {
+    const r = this.renderer;
+    r.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.env.sun.shadow.mapSize.set(4096, 4096);
+    this.water.enableReflections(r);
+    this.water.hideInReflection.push(this.fx.points, this.fx.decals, this.env.rain);
+    const size = r.getDrawingBufferSize(new THREE.Vector2());
+    const rt = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples: 4 });
+    this.composer = new EffectComposer(r, rt);
+    this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.35, 0.55, 0.92);
+    this.composer.addPass(this.bloom);
+    this.composer.addPass(new OutputPass());
+    // Environment lighting: a private copy of the sky, re-baked as the sun moves.
+    this.pmrem = new THREE.PMREMGenerator(r);
+    this.envScene = new THREE.Scene();
+    this.envSky = new Sky(); this.envSky.scale.setScalar(1000);
+    this.envSky.material = this.env.sky.material; // shares sun position / turbidity uniforms
+    this.envScene.add(this.envSky);
+    this.envTimer = 0; this.envSun = new THREE.Vector3(0, -1, 0);
+  }
+
+  updateEnvMap(dt) {
+    this.envTimer -= dt;
+    const sun = this.env.sunDir;
+    if (this.envTimer > 0 && sun.distanceTo(this.envSun) < 0.03) return;
+    this.envTimer = 4; this.envSun.copy(sun);
+    const old = this.envRT;
+    this.envRT = this.pmrem.fromScene(this.envScene, 0.02, 1, 3000);
+    this.scene.environment = this.envRT.texture;
+    if (old) old.dispose();
+  }
+
   setupStart() {
     const rng = this.rng;
     this.water.level = 0;
@@ -99,14 +140,20 @@ class Game {
 
     // A nearby abandoned rowboat and a family waiting at the end of a pier.
     const w = this.world;
-    const rb = w.spawnBoat('rowboat', 48, 95, 'derelict', { hpFrac: 0.7, heading: 2.5 });
-    void rb;
-    const pier = this.city.colliders.find((c) => c.kind === 'pier' && c.minx > 60 && c.minx < 140);
-    if (pier) {
-      pier.roof = { minx: pier.minx, maxx: pier.maxx, minz: pier.maxz - 6, maxz: pier.maxz, top: pier.top };
-      w.spawnSurvivorGroup(pier, { people: 2, animal: 'cat' });
+    // The first discoveries: a half-sunk rowboat drifting off the quay, and one
+    // person stranded on a warehouse roof in the drowned harbor district.
+    this.env.update(0, new THREE.Vector3(), this.camera);
+    const level = this.env.level;
+    this.water.level = level;
+    w.spawnBoat('rowboat', 70, 150, 'derelict', { hpFrac: 0.3, heading: 2.5 });
+    let best = null, bd = Infinity;
+    for (const c of this.city.colliders) {
+      if (!['house', 'building'].includes(c.kind) || c.roof.top < level + 1 || c.roof.top > level + 10) continue;
+      const d = Math.hypot((c.minx + c.maxx) / 2 - 12, (c.minz + c.maxz) / 2 - 70);
+      if (d > 120 && d < bd) { bd = d; best = c; }
     }
-    for (let i = 0; i < 6; i++) w.spawnPickup(12 + (rng() - 0.5) * 120, 110 + rng() * 80);
+    if (best) w.spawnSurvivorGroup(best, { people: 1, animal: 'cat' });
+    for (let i = 0; i < 3; i++) w.spawnPickup(12 + (rng() - 0.5) * 80, 110 + rng() * 60);
   }
 
   warnOnce(m) {
@@ -182,16 +229,18 @@ class Game {
 
   craft(id, boat) {
     const r = RECIPES.find((x) => x.id === id); const f = this.fleet;
-    if (!r || !f.canAfford(r.cost)) return;
-    if (r.module) { if (boat.canAdd(r.module)) return; f.pay(r.cost); boat.addModule(r.module); this.ui.toast(`${r.label} fitted to the ${boat.name}.`, 'good'); }
-    else if (r.id === 'patch') { f.pay(r.cost); boat.hp = Math.min(boat.maxHp, boat.hp + 35); this.ui.toast('Hull patched.', 'good'); }
-    else if (r.id === 'lengthen') { f.pay(r.cost); boat.lengthen(1.5); this.ui.toast(`The ${boat.name} is now ${boat.L.toFixed(1)} m.`, 'good'); }
-    else if (r.gives) { f.pay(r.cost); for (const [k, v] of Object.entries(r.gives)) f.give(k, v); this.ui.toast(`${r.label}: +${Object.entries(r.gives).map(([k, v]) => `${v} ${k}`).join(', ')}`, 'good'); }
+    if (!r) return;
+    const cost = recipeCost(r, boat);
+    if (!f.canAfford(cost)) return;
+    if (r.module) { if (boat.canAdd(r.module)) return; f.pay(cost); boat.addModule(r.module); this.ui.toast(`${r.label} fitted to the ${boat.name}.`, 'good'); }
+    else if (r.id === 'patch') { f.pay(cost); boat.hp = Math.min(boat.maxHp, boat.hp + 20); this.ui.toast('Hull patched.', 'good'); }
+    else if (r.id === 'lengthen') { f.pay(cost); boat.design.lengthened = (boat.design.lengthened || 0) + 1; boat.lengthen(1.5); this.ui.toast(`The ${boat.name} is now ${boat.L.toFixed(1)} m.`, 'good'); }
+    else if (r.gives) { f.pay(cost); for (const [k, v] of Object.entries(r.gives)) f.give(k, v); this.ui.toast(`${r.label}: +${Object.entries(r.gives).map(([k, v]) => `${v} ${k}`).join(', ')}`, 'good'); }
     else if (r.newBoat) {
       const donorBoat = f.boats.find((b) => b.crew.some((p) => !p.isPlayer));
       if (!donorBoat) return;
       const donor = donorBoat.crew.find((p) => !p.isPlayer);
-      f.pay(r.cost);
+      f.pay(cost);
       const pl = f.player;
       const side = { x: Math.cos(pl.heading) * (pl.B + 4), z: -Math.sin(pl.heading) * (pl.B + 4) };
       const nb = this.world.spawnBoat(r.newBoat, pl.x + side.x, pl.z + side.z, 'derelict', { heading: pl.heading });
@@ -298,7 +347,7 @@ class Game {
     this.floodUniforms.uPower.value = clamp(1 - env.elapsedDays / 6, 0, 1) * 0.85 + 0.15;
 
     if (dt > 0 && f.player) {
-      const gameHours = dt * env.timeScale * 24 / 600;
+      const gameHours = dt * env.timeScale * 24 / DAY_SECONDS;
       this.ctx.canRepair = f.inv.wood > 0.5 || f.inv.scrap > 0.5;
       f.update(dt, this.ctx, gameHours);
       for (const b of [...f.boats]) b.update(dt, this.ctx);
@@ -333,7 +382,11 @@ class Game {
 
     if (pl) this.audio.update({ wind: env.windSpeed, rain: env.rainAmt, sea: this.water.sea, speed: pl.speed, engine: pl.engineOn, throttle: pl.throttle, power: pl.enginePower });
     if (this.started) this.ui.update(rawDt);
-    this.renderer.render(this.scene, this.camera);
+    if (this.composer) {
+      this.updateEnvMap(rawDt);
+      this.water.renderReflection(this.renderer, this.scene, this.camera);
+      this.composer.render();
+    } else this.renderer.render(this.scene, this.camera);
   }
 }
 
