@@ -301,8 +301,9 @@ export class Boat {
     this.maxHp = Math.round(d.length * d.beam * 7 + 30) + n('armor') * 60;
     if (oldMax && this.hp !== undefined) this.hp = Math.min(this.maxHp, this.hp + (this.maxHp - oldMax));
     this.mass = 110 * d.length * d.beam * (d.draft + d.freeboard);
-    this.cF = 35 * d.beam * (d.draft + 0.3);
-    this.hullSpeed = d.planing ? 99 : 1.35 * Math.sqrt(d.length);
+    // Tuned for game feel rather than naval-architecture accuracy: roughly 2x real-world speeds.
+    this.cF = 18 * d.beam * (d.draft + 0.3);
+    this.hullSpeed = (d.planing ? 3.0 : 2.0) * Math.sqrt(d.length);
     this.stability = 1 + n('outrigger') * 1.2 + (d.kind === 'raft' ? 0.5 : 0);
     this.deckY = d.kind === 'raft' ? d.freeboard : d.open ? -d.draft * 0.35 : d.freeboard - 0.28;
   }
@@ -746,13 +747,13 @@ export class Boat {
     const thr = control ? this.throttle : 0;
     if (Math.abs(thr) > 0.02) {
       if (this.enginePower > 0 && ctx.fuel(this) > 0 && !this.noEngine) {
-        const T = 260 * Math.pow(this.enginePower, 0.75) * thr * (thr < 0 ? 0.5 : 1);
+        const T = 900 * Math.pow(this.enginePower, 0.62) * thr * (thr < 0 ? 0.5 : 1);
         Fu += T; this.engineOn = true;
         ctx.useFuel(Math.abs(thr) * Math.pow(this.enginePower, 0.6) * 0.0012 * dt, this);
       } else if (this.sailDeploy < 0.5 || thr < 0 || (this.sailDrive ?? 0) < 0.1) {
         this.rowingWanted = true;
         const rowers = Math.max(1, Math.min(crewN, L < 9 ? 4 : 6));
-        Fu += thr * rowers * (L < 9 ? 160 : 110) * (thr < 0 ? 0.6 : 1) * (this.design.kind === 'raft' ? 0.8 : 1);
+        Fu += thr * rowers * (L < 9 ? 120 : 220) * (thr < 0 ? 0.6 : 1) * (this.design.kind === 'raft' ? 0.8 : 1);
         this.rowing = true;
       }
     }
@@ -769,12 +770,12 @@ export class Boat {
     if (alpha < 32) cDrive = 0;
     else if (alpha < 50) cDrive = (alpha - 32) / 18 * 0.9;
     else if (alpha < 110) cDrive = 0.9 + (alpha - 50) / 60 * 0.2;
-    else cDrive = 1.1 - (alpha - 110) / 70 * 0.4;
+    else cDrive = 1.1 - (alpha - 110) / 70 * 0.15;
     this.sailAlpha = alpha; this.sailDrive = cDrive;
     const q = 0.5 * 1.2 * aw * aw;
     let heel = 0;
     if (this.sailDeploy > 0.01 && sailArea > 0) {
-      Fu += q * sailArea * cDrive * this.sailDeploy * 3.0;
+      Fu += q * sailArea * cDrive * this.sailDeploy * 6.0;
       const leeSide = Math.sign(W.x * rx + W.y * rz) || 1;
       const Fs = q * sailArea * this.sailDeploy * 0.4 * Math.sin(alpha * Math.PI / 180);
       Fv += Fs * leeSide;
@@ -793,7 +794,7 @@ export class Boat {
     this.waterlogged = clamp(1 - this.hp / (this.maxHp * 0.5), 0, 1);
     let du = this.cF * (u * Math.abs(u) + 1.5 * u) * (1 + 3 * this.waterlogged);
     const au = Math.abs(u);
-    if (au > this.hullSpeed) du += Math.sign(u) * this.cF * 5 * (au - this.hullSpeed) ** 2;
+    if (au > this.hullSpeed) du += Math.sign(u) * this.cF * 12 * (au - this.hullSpeed) ** 2;
     Fu -= du;
     Fv -= this.cF * 14 * (v * Math.abs(v) + 1.2 * v);
 

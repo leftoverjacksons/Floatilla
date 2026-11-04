@@ -5,9 +5,9 @@ import { clamp, lerp, smoothstep, damp, fbm, rand } from './util.js';
 export const DAY_SECONDS = 1200; // real seconds per in-game day at 1x (20 minutes)
 
 const WEATHER = {
-  clear: { cloud: 0.12, rain: 0, wind: 4.5, fog: 2400, label: 'Clear' },
-  cloudy: { cloud: 0.6, rain: 0, wind: 7.5, fog: 1700, label: 'Overcast' },
-  fog: { cloud: 0.45, rain: 0, wind: 2.0, fog: 170, label: 'Fog' },
+  clear: { cloud: 0.12, rain: 0, wind: 6.0, fog: 2400, label: 'Clear' },
+  cloudy: { cloud: 0.6, rain: 0, wind: 8.5, fog: 1700, label: 'Overcast' },
+  fog: { cloud: 0.45, rain: 0, wind: 3.0, fog: 170, label: 'Fog' },
   rain: { cloud: 0.88, rain: 0.6, wind: 10.5, fog: 750, label: 'Rain' },
   storm: { cloud: 1.0, rain: 1.0, wind: 18.5, fog: 380, label: 'Storm' },
 };
