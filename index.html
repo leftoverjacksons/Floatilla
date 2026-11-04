@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Floatilla</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b1218; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; color: #e6eef2; }
+  #app canvas { display: block; }
+  .panel { position: absolute; background: rgba(8, 16, 22, 0.58); border: 1px solid rgba(160, 200, 220, 0.18); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; line-height: 1.45; backdrop-filter: blur(4px); pointer-events: none; }
+  .big { font-size: 14px; font-weight: 600; margin-bottom: 2px; }
+  .dim { color: #9ab0bc; }
+  .warn { color: #ffb060; font-weight: 600; }
+  #hud-env { top: 12px; left: 12px; min-width: 230px; }
+  #hud-boat { bottom: 12px; left: 12px; width: 280px; }
+  #hud-res { top: 252px; right: 12px; width: 200px; }
+  #hud-fleet { bottom: 12px; right: 12px; width: 340px; }
+  #minimap { position: absolute; top: 12px; right: 12px; width: 222px; height: 222px; border-radius: 8px; border: 1px solid rgba(160, 200, 220, 0.25); }
+  .bar { position: relative; height: 16px; background: rgba(255,255,255,0.08); border-radius: 4px; margin: 3px 0; overflow: hidden; }
+  .bar div { position: absolute; left: 0; top: 0; bottom: 0; }
+  .bar span { position: relative; padding-left: 6px; font-size: 11px; line-height: 16px; }
+  .res { display: flex; justify-content: space-between; }
+  .fb { display: grid; grid-template-columns: 1.6fr 1fr 0.5fr 0.5fr 0.6fr; gap: 4px; font-size: 11.5px; }
+  .fb.lead { color: #ffcf8a; }
+  #prompt { opacity: 0; position: absolute; left: 50%; bottom: 120px; transform: translateX(-50%); background: rgba(10, 20, 26, 0.75); padding: 8px 16px; border-radius: 20px; font-size: 15px; font-weight: 600; border: 1px solid rgba(255, 200, 120, 0.4); transition: opacity .2s; pointer-events: none; white-space: nowrap; }
+  #toasts { position: absolute; left: 12px; top: 150px; width: 360px; display: flex; flex-direction: column; gap: 5px; pointer-events: none; }
+  .toast { background: rgba(8, 16, 22, 0.72); border-left: 3px solid #6aa8c8; padding: 6px 10px; border-radius: 4px; font-size: 13px; transition: opacity 1s; }
+  .toast.good { border-color: #6fbf73; } .toast.bad { border-color: #e05040; } .toast.warn { border-color: #ffb060; } .toast.loot { border-color: #e8d070; }
+  .toast.fade { opacity: 0; }
+  .overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; background: radial-gradient(ellipse at center, rgba(5,12,18,0.35), rgba(5,12,18,0.85)); }
+  #title { cursor: pointer; }
+  #title h1 { font-size: 72px; letter-spacing: 14px; margin: 0; font-weight: 300; color: #f4efe4; text-shadow: 0 4px 30px rgba(0,0,0,0.6); }
+  #title p { max-width: 640px; text-align: center; color: #c6d4da; line-height: 1.6; }
+  .cta { margin-top: 18px; padding: 10px 26px; border: 1px solid #ffcf8a; border-radius: 30px; color: #ffcf8a; font-size: 16px; animation: pulse 2s infinite; }
+  @keyframes pulse { 50% { opacity: 0.55; } }
+  .keys { display: grid; grid-template-columns: auto auto; gap: 3px 18px; font-size: 13px; color: #c6d4da; margin-top: 16px; }
+  .keys b { color: #ffcf8a; font-weight: 600; text-align: right; }
+  #help { display: none; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 560px; pointer-events: auto; background: rgba(8,16,22,0.92); padding: 18px 22px; }
+  #craft { display: none; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(820px, 94vw); max-height: 86vh; overflow: auto; pointer-events: auto; background: rgba(8,16,22,0.94); padding: 16px 18px; }
+  #craft h2 { margin: 0 0 8px; font-weight: 500; }
+  #craft-close { position: absolute; right: 14px; top: 12px; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+  button { background: #1d3442; color: #e6eef2; border: 1px solid #3c6278; border-radius: 6px; padding: 5px 10px; cursor: pointer; font: inherit; }
+  button:hover:not(:disabled) { background: #28495c; }
+  button:disabled { opacity: 0.45; cursor: default; }
+  .tab.on { background: #6b4a1e; border-color: #ffcf8a; }
+  .boatinfo { margin-bottom: 10px; padding: 8px; background: rgba(255,255,255,0.04); border-radius: 6px; }
+  .recipes { display: grid; gap: 6px; }
+  .recipe { display: grid; grid-template-columns: 1fr 170px 150px; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 6px; background: rgba(255,255,255,0.035); }
+  .recipe.off { opacity: 0.7; }
+  .cost span { margin-right: 6px; } .cost .short { color: #ff8a70; }
+  #gameover { display: none; }
+  #gameover h2 { font-size: 40px; font-weight: 300; letter-spacing: 6px; }
+  #gameover p { max-width: 560px; text-align: center; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="hud-env" class="panel"></div>
+<canvas id="minimap" width="222" height="222"></canvas>
+<div id="hud-res" class="panel"></div>
+<div id="hud-boat" class="panel"></div>
+<div id="hud-fleet" class="panel"></div>
+<div id="prompt"></div>
+<div id="toasts"></div>
+
+<div id="help" class="panel">
+  <div class="big">Controls</div>
+  <div class="keys">
+    <b>W / S</b><span>Throttle lever up / down (astern below zero) · Space: all stop</span>
+    <b>A / D</b><span>Rudder</span>
+    <b>R</b><span>Raise / furl sails (no drive within ~35° of the wind)</span>
+    <b>E</b><span>Interact: rescue, haul rooftop caches, crew derelicts, hail boats</span>
+    <b>X</b><span>Salvage a derelict for materials</span>
+    <b>C</b><span>Crafting &amp; boat modifications (pauses)</span>
+    <b>Tab</b><span>Take the helm of another boat (it becomes the lead)</span>
+    <b>F</b><span>Detach from the floatilla for recon / call it back</span>
+    <b>G</b><span>Fleet: hold position / follow</span>
+    <b>L</b><span>Searchlight (if fitted)</span>
+    <b>Mouse</b><span>Drag to orbit, wheel to zoom</span>
+    <b>T</b><span>Time warp ×1 / ×6 / ×30 · P pause</span>
+    <b>[ ]</b><span>Debug: lower / raise flood 5 m</span>
+  </div>
+  <p class="dim">Floating supplies are collected automatically when any floatilla boat passes close. Crew pick their own jobs: helm, fishing, trimming sails, rowing, repairs, lookout, sleep. Everyone eats and drinks. The water never stops rising.</p>
+</div>
+
+<div id="craft" class="panel">
+  <h2>Workshop</h2>
+  <button id="craft-close">Close (C)</button>
+  <div id="craft-body"></div>
+</div>
+
+<div id="title" class="overlay">
+  <h1>FLOATILLA</h1>
+  <p>The harbor is the first to go. Then the streets, the houses, the towers.<br>Gather what floats. Pull people from rooftops. Lash boats together and keep moving.</p>
+  <div class="keys">
+    <b>W/S</b><span>throttle</span><b>A/D</b><span>steer</span><b>R</b><span>sails</span><b>E</b><span>interact</span>
+    <b>C</b><span>craft</span><b>Tab</b><span>switch lead boat</span><b>F</b><span>detach / regroup</span><b>H</b><span>all controls</span>
+  </div>
+  <div class="cta">Click to cast off</div>
+</div>
+
+<div id="gameover" class="overlay">
+  <h2>THE WATER WON</h2>
+  <p id="go-text"></p>
+  <button id="restart">Try again</button>
+</div>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>
