@@ -124,7 +124,7 @@ export class Landmarks {
     // bridge, funnel
     const bz = -L * 0.37;
     this.box(g, 0xeeeeea, B * 0.86, 14, 10, 0, deckY + 7, bz);
-    for (let k = 0; k < 4; k++) this.box(g, 0x1a2530, B * 0.87, 0.9, 10.1, 0, deckY + 3 + k * 3, bz, { roughness: 0.15, metalness: 0.4 });
+    for (let k = 0; k < 4; k++) this.box(g, 0x1a2530, B * 0.86 + 0.3, 0.9, 10.3, 0, deckY + 3 + k * 3, bz, { roughness: 0.15, metalness: 0.4 });
     this.box(g, 0xeeeeea, B * 1.0, 0.6, 7, 0, deckY + 13.6, bz + 1);
     this.box(g, 0xb33a2e, 4, 10, 5, 0, deckY + 17, bz - 7);
     const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.4, 8, 6), new THREE.MeshStandardMaterial({ color: 0xff3020, emissive: 0xff2010, emissiveIntensity: 0 }));
@@ -221,7 +221,7 @@ export class Landmarks {
     const g = new THREE.Group(); this.scene.add(g);
     // pitch
     this.box(g, 0x3e7a3a, rx * 1.3, 0.3, rz * 1.25, cx, gr + 0.15, cz);
-    for (const zz of [-1, 1]) this.box(g, 0xf0f0f0, rx * 1.1, 0.32, 0.4, cx, gr + 0.16, cz + zz * rz * 0.5);
+    for (const zz of [-1, 1]) this.box(g, 0xf0f0f0, rx * 1.1, 0.4, 0.4, cx, gr + 0.2, cz + zz * rz * 0.5);
     const wallC = this.mat(0xb8b4aa), seatA = this.mat(0x2e5fa3), seatB = this.mat(0xc8302a);
     const N = 32, gates = new Set([31, 0, 1, 15, 16, 17]);
     let stand = null;

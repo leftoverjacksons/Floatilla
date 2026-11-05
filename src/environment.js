@@ -211,8 +211,11 @@ export class Environment {
 
     // Lights.
     const lightDir = elev > -0.05 ? this.sunDir : this.moonDir;
-    this.sun.position.copy(focus).addScaledVector(lightDir, 300);
-    this.sun.target.position.copy(focus);
+    // Snap the shadow focus to the shadow-map texel grid so shadow edges don't crawl as the boat moves.
+    const st = this.shadowStep || 0.07;
+    const fx = Math.round(focus.x / st) * st, fz = Math.round(focus.z / st) * st;
+    this.sun.target.position.set(fx, focus.y, fz);
+    this.sun.position.set(fx, focus.y, fz).addScaledVector(lightDir, 500);
     if (elev > -0.05) { this.sun.color.copy(this.sunColor); this.sun.intensity = 3.2 * smoothstep(-0.05, 0.15, elev) * (1 - cloud * 0.7); }
     else { this.sun.color.setRGB(0.6, 0.7, 1.0); this.sun.intensity = 0.6 * (1 - cloud * 0.8); }
     this.hemi.color.copy(new THREE.Color(0.35, 0.42, 0.62)).lerp(this.skyTop, day).lerp(new THREE.Color(0.75, 0.82, 0.9), 0.4 * day);

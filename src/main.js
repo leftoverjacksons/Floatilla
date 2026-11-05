@@ -40,7 +40,7 @@ class Game {
     document.getElementById('app').appendChild(renderer.domElement);
 
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.3, 12000);
+    this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.5, 12000);
     window.addEventListener('resize', () => {
       this.camera.aspect = window.innerWidth / window.innerHeight; this.camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
@@ -113,6 +113,10 @@ class Game {
     if (this.composer) this.composer.setSize(window.innerWidth, window.innerHeight);
     const sun = this.env.sun;
     const size = q === 'high' ? 4096 : 2048;
+    // shadow coverage around the camera focus: wider on high so nearby blocks and landmarks cast shadows too
+    const ext = q === 'high' ? 150 : 90, sc = sun.shadow.camera;
+    sc.left = -ext; sc.right = ext; sc.top = ext; sc.bottom = -ext; sc.far = 1100; sc.updateProjectionMatrix();
+    this.env.shadowStep = (2 * ext) / size;
     if (sun.shadow.mapSize.x !== size) { sun.shadow.mapSize.set(size, size); if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; } }
     if (r.shadowMap.enabled !== shadows) {
       r.shadowMap.enabled = shadows;
@@ -146,8 +150,22 @@ class Game {
           if (bad) c = vec4(0.0, 0.0, 0.0, 1.0);
           gl_FragColor = vec4(min(c.rgb, vec3(48.0)), c.a); }`,
     }));
+    // Gentle vignette and split-tone grade (cool shadows, warm highlights), applied in linear HDR before tone mapping.
+    this.gradePass = new ShaderPass({
+      uniforms: { tDiffuse: { value: null } },
+      vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: `uniform sampler2D tDiffuse; varying vec2 vUv;
+        void main(){ vec4 c = texture2D(tDiffuse, vUv);
+          vec2 d = (vUv - 0.5) * vec2(1.0, 0.8);
+          c.rgb *= mix(0.8, 1.0, smoothstep(0.75, 0.2, length(d)));
+          float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
+          c.rgb *= mix(vec3(1.0), vec3(0.95, 1.0, 1.05), smoothstep(0.35, 0.0, l) * 0.6);
+          c.rgb *= mix(vec3(1.0), vec3(1.04, 1.0, 0.95), smoothstep(0.5, 2.5, l) * 0.6);
+          gl_FragColor = c; }`,
+    });
     this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.35, 0.55, 0.92);
     this.composer.addPass(this.bloom);
+    this.composer.addPass(this.gradePass);
     this.composer.addPass(new OutputPass());
     // Environment lighting: a private copy of the sky, re-baked as the sun moves.
     this.pmrem = new THREE.PMREMGenerator(r);

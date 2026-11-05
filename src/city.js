@@ -291,8 +291,18 @@ export class City {
     const lh = new THREE.Group();
     const white = new THREE.MeshStandardMaterial({ color: 0xeeeeea, roughness: 0.6 });
     const red = new THREE.MeshStandardMaterial({ color: 0xb02a22, roughness: 0.6 });
-    const t1 = new THREE.Mesh(new THREE.CylinderGeometry(3.2, 4.2, 22, 16), white); t1.position.y = 11 - 4;
-    const band = new THREE.Mesh(new THREE.CylinderGeometry(3.5, 3.7, 4, 16), red); band.position.y = 9;
+    const t1 = new THREE.Mesh(new THREE.CylinderGeometry(3.2, 4.2, 22, 24), white); t1.position.y = 11 - 4;
+    // Bands sit 0.1 m proud of the tapered tower (radius at y is 4.2 - (y + 4) / 22); equal radii z-fight.
+    const rAt = (y) => 4.2 - (y + 4) / 22;
+    const band = new THREE.Mesh(new THREE.CylinderGeometry(rAt(11) + 0.1, rAt(7) + 0.1, 4, 24), red); band.position.y = 9;
+    const band2 = new THREE.Mesh(new THREE.CylinderGeometry(rAt(16.5) + 0.1, rAt(13.5) + 0.1, 3, 24), red); band2.position.y = 15;
+    const gallery = new THREE.Mesh(new THREE.CylinderGeometry(3.6, 3.6, 0.35, 24), new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.5, metalness: 0.6 })); gallery.position.y = 18.2;
+    const rail = new THREE.Mesh(new THREE.TorusGeometry(3.5, 0.05, 4, 32), gallery.material); rail.rotation.x = Math.PI / 2; rail.position.y = 19.2;
+    for (const o of [band2, gallery, rail]) { o.castShadow = true; lh.add(o); }
+    for (const [y, a] of [[2, 0.3], [6, 2.1], [12.5, 4.0]]) {
+      const w = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.3, 0.3), new THREE.MeshStandardMaterial({ color: 0x1a2028, roughness: 0.2 }));
+      const r = rAt(y) + 0.05; w.position.set(Math.cos(a) * r, y, Math.sin(a) * r); w.rotation.y = -a + Math.PI / 2; lh.add(w);
+    }
     const lamp = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 2.2, 3, 12), new THREE.MeshStandardMaterial({ color: 0xfff1b0, emissive: 0xffd76a, emissiveIntensity: 0.4 }));
     lamp.position.y = 19.5;
     const cap = new THREE.Mesh(new THREE.ConeGeometry(2.8, 2.5, 12), red); cap.position.y = 22.2;

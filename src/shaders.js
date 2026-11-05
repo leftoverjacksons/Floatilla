@@ -4,6 +4,8 @@
 
 export const GLSL_HASH = /* glsl */`
 float fhash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+float fvnoise(vec2 p){ vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(fhash12(i), fhash12(i + vec2(1.0, 0.0)), u.x), mix(fhash12(i + vec2(0.0, 1.0)), fhash12(i + vec2(1.0, 1.0)), u.x), u.y); }
 `;
 
 export function patchFloodMaterial(mat, uniforms, windows) {
@@ -53,6 +55,24 @@ ${windows ? `
     fLit = win * step(1.0 - 0.3 * uPower, r) * step(uLevel + 2.0, vFWP.y) * (0.5 + fhash12(id * 1.37));
   }
 }` : ''}
+// Surface weathering: large-scale albedo variation everywhere, plus floor slabs,
+// rain-streak grime and gravel roofs on buildings. Keeps big flat faces from reading as plastic.
+{
+  vec3 n = normalize(vFWN);
+  float macro = fvnoise(vFWP.xz * 0.05 + vFWP.y * 0.02) * 0.6 + fvnoise(vFWP.xz * 0.23 + vFWP.y * 0.1) * 0.4;
+  diffuseColor.rgb *= 0.87 + 0.24 * macro;
+  ${windows ? `
+  if (vStyle > 0.5 && abs(n.y) < 0.5) {
+    float fh2 = vStyle < 1.5 ? 3.5 : (vStyle < 2.5 ? 3.0 : 5.5);
+    float slab = 1.0 - step(0.075, fract((vFWP.y + 0.6) / fh2));
+    if (vStyle < 2.5) diffuseColor.rgb *= 1.0 - slab * 0.22;
+    vec2 t3 = vec2(-n.z, n.x);
+    float hc2 = dot(vFWP.xz, t3);
+    float streak = fvnoise(vec2(hc2 * 1.1, vFWP.y * 0.04));
+    diffuseColor.rgb *= 1.0 - smoothstep(0.55, 0.92, streak) * 0.2;
+  }
+  if (n.y > 0.5) diffuseColor.rgb *= 0.78 + 0.3 * fvnoise(vFWP.xz * 0.8) + 0.08 * fhash12(floor(vFWP.xz * 6.0));` : ''}
+}
 float fUnder = clamp((uLevel - vFWP.y) / 5.0, 0.0, 1.0);
 diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.06, 0.11, 0.1), fUnder * 0.85);
 float fStain = (1.0 - step(uLevel + 1.6, vFWP.y)) * step(uLevel, vFWP.y) * smoothstep(uLevel + 1.6, uLevel, vFWP.y);

@@ -921,8 +921,13 @@ export class Boat {
       r.pivot.rotation.y += angleDiff(r.pivot.rotation.y, target) * damp(1.5, dt);
       const luff = this.sailDrive < 0.05 && this.sailDeploy > 0.2;
       const fill = luff ? Math.sin(performance.now() * 0.02) * 0.08 : this.sailDrive * 0.35 + 0.05;
-      r.sail.scale.x = -Math.sign(r.pivot.rotation.y || 1) * fill * r.foot * this.sailDeploy;
+      // Never let a scale axis reach zero: a singular matrix gives NaN normals, black pixels,
+      // and (through bloom) black blocks across the screen. A furled sail is simply hidden.
+      const bulge = fill * r.foot * this.sailDeploy;
+      const sign = Math.sign(r.pivot.rotation.y || 1) || 1;
+      r.sail.scale.x = -sign * (Math.abs(bulge) < 0.03 ? 0.03 * Math.sign(bulge || 1) : bulge);
       r.sail.scale.y = (r.h - 1.3) * (0.06 + 0.94 * this.sailDeploy);
+      r.sail.visible = this.sailDeploy > 0.04;
     }
     // Outboard prop spin + oars.
     for (const p of this.props) p.rotation.z += (this.engineOn ? this.throttle * 40 : 0) * dt;
