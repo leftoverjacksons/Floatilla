@@ -46,7 +46,7 @@ export class UI {
       <div class="big">${env.timeString()}</div>
       <div>${env.label} · wind ${env.windSpeed.toFixed(1)} m/s ${dirName(env.windAngle)}</div>
       <div>Flood level <b>${(env.level).toFixed(1)} m</b> <span class="dim">(+${(rate * 100).toFixed(0)} cm/h)</span></div>
-      <div class="dim">${Math.round(g.fps)} fps · ${g.quality} quality</div>
+      <div class="dim">${Math.round(g.fps)} fps · ${g.quality} quality · ${Math.round((g.resScale || 1) * 100)}% resolution</div>
       ${env.timeScale > 1 ? `<div class="warn">TIME ×${env.timeScale}</div>` : ''}
       ${g.paused ? '<div class="warn">PAUSED</div>' : ''}`;
 

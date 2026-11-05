@@ -20,6 +20,7 @@ import { Audio } from './audio.js';
 import { Fx } from './fx.js';
 import { RadialMenu } from './radial.js';
 import { Landmarks, LANDMARK_RESERVED } from './landmarks.js';
+import { LAYER_NO_REFLECT } from './tiles.js';
 import { readSave, writeSave, restore, consumeLoadFlag, requestLoadOnReload } from './save.js';
 
 class Game {
@@ -41,6 +42,7 @@ class Game {
 
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.5, 12000);
+    this.camera.layers.enable(LAYER_NO_REFLECT); // trees/cars: visible in the main view, skipped by reflections
     window.addEventListener('resize', () => {
       this.camera.aspect = window.innerWidth / window.innerHeight; this.camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
@@ -106,12 +108,14 @@ class Game {
     this.quality = q;
     try { localStorage.setItem('floatilla-quality', q); } catch { /* ignore */ }
     const shadows = q !== 'low';
-    const ratio = q === 'low' ? 0.75 : Math.min(window.devicePixelRatio, q === 'high' ? 1.75 : 1.25);
-    r.setPixelRatio(ratio);
+    this.baseRatio = q === 'low' ? 0.75 : Math.min(window.devicePixelRatio, q === 'high' ? 1.5 : 1.25);
+    this.resScale = this.resScale || 1;
+    r.setPixelRatio(this.baseRatio * this.resScale);
     r.setSize(window.innerWidth, window.innerHeight);
     if (q !== 'low' && !this.composer) this.setupHighQuality();
     if (this.composer) this.composer.setSize(window.innerWidth, window.innerHeight);
     const sun = this.env.sun;
+    sun.shadow.camera.layers.enable(LAYER_NO_REFLECT);
     const size = q === 'high' ? 4096 : 2048;
     // shadow coverage around the camera focus: wider on high so nearby blocks and landmarks cast shadows too
     const ext = q === 'high' ? 150 : 90, sc = sun.shadow.camera;
@@ -127,6 +131,27 @@ class Game {
     if (q === 'high') this.water.resizeReflections(r);
     if (q === 'low') this.scene.environment = null;
     else if (this.envRT) this.scene.environment = this.envRT.texture;
+  }
+
+  /**
+   * Dynamic resolution: drop render resolution in 10% steps while the frame rate is under ~50 fps,
+   * and creep back up when there is headroom. Keeps the frame rate steady instead of the image sharp.
+   */
+  adaptResolution(dt) {
+    if (!this.started || this.paused) return;
+    this.resTimer = (this.resTimer || 0) + dt;
+    if (this.resTimer < 1.5) return;
+    this.resTimer = 0;
+    const minScale = this.quality === 'low' ? 0.8 : 0.55;
+    let s = this.resScale;
+    if (this.fps < 48 && s > minScale) s = Math.max(minScale, s - 0.1);
+    else if (this.fps > 58 && s < 1) s = Math.min(1, s + 0.05);
+    if (s === this.resScale) return;
+    this.resScale = s;
+    this.renderer.setPixelRatio(this.baseRatio * s);
+    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    if (this.composer) this.composer.setSize(window.innerWidth, window.innerHeight);
+    if (this.water.reflectionsOn) this.water.resizeReflections(this.renderer);
   }
 
   /** Builds the post-processing chain and environment light once (used by medium and high). */
@@ -519,7 +544,7 @@ class Game {
     if (dt > 0) this.playerControls(dt);
     env.update(dt, focus, this.camera);
     this.wind.set(Math.cos(env.windAngle), Math.sin(env.windAngle)).multiplyScalar(env.windSpeed);
-    this.water.setSeaState(0.35 + env.windSpeed / 7);
+    this.water.setSeaState(0.35 + env.windSpeed / 7, env.windAngle, env.windSpeed, env.rainAmt);
     const u = this.water.uniforms;
     u.uSunDir.value.copy(env.sunDir.y > -0.05 ? env.sunDir : env.moonDir);
     u.uSunColor.value.copy(env.sunDir.y > -0.05 ? env.sunColor : new THREE.Color(0.5, 0.55, 0.7));
@@ -573,6 +598,11 @@ class Game {
     if (pl) this.audio.update({ wind: env.windSpeed, rain: env.rainAmt, sea: this.water.sea, speed: pl.speed, engine: pl.engineOn, throttle: pl.throttle, power: pl.enginePower });
     if (this.started) this.ui.update(rawDt);
     this.fps += (1 / Math.max(rawDt, 1e-3) - this.fps) * 0.05;
+    this.adaptResolution(rawDt);
+    // Shadows refresh every other frame: halves the cost of the shadow pass, imperceptible at sailing speeds.
+    this.frameNo = (this.frameNo || 0) + 1;
+    this.renderer.shadowMap.autoUpdate = false;
+    if (this.renderer.shadowMap.enabled && this.frameNo % 2 === 0) this.renderer.shadowMap.needsUpdate = true;
     if (this.composer && this.quality !== 'low') {
       this.updateEnvMap(rawDt);
       if (this.water.reflectionsOn) this.water.renderReflection(this.renderer, this.scene, this.camera);

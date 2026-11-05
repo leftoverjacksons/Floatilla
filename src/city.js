@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mulberry32, rand, pick, randInt } from './util.js';
 import { groundHeight } from './terrain.js';
 import { patchFloodMaterial } from './shaders.js';
+import { tiled, LAYER_NO_REFLECT } from './tiles.js';
 
 const TOWER_COLORS = [0x8a96a3, 0x6f7f8f, 0xa9a59a, 0x5d6b78, 0xb8b2a6, 0x7b8a86, 0x9aa7b4, 0x4f5d6a, 0xc2b8a3];
 const MID_COLORS = [0x9c5a43, 0xb07b5c, 0xc9b79b, 0x8c6e5a, 0xa39283, 0x7d6656, 0xbfa98a, 0x6e7a73];
@@ -222,7 +223,10 @@ export class City {
   }
 
   // ---- meshes ------------------------------------------------------------
-  instancedBoxes(list, mat, withStyle) {
+  instancedBoxes(all, mat, withStyle) {
+    return tiled(all, (b) => [(b.minx + b.maxx) / 2, (b.minz + b.maxz) / 2], (list) => this.instancedBoxChunk(list, mat, withStyle));
+  }
+  instancedBoxChunk(list, mat, withStyle) {
     const geo = new THREE.BoxGeometry(1, 1, 1);
     let style;
     if (withStyle) {
@@ -263,29 +267,34 @@ export class City {
     pr.computeVertexNormals();
     const roofMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, side: THREE.DoubleSide });
     patchFloodMaterial(roofMat, uniforms, false);
-    const roofs = new THREE.InstancedMesh(pr, roofMat, this.roofs.length);
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3(), col = new THREE.Color();
     const up = new THREE.Vector3(0, 1, 0);
-    this.roofs.forEach((r, i) => {
-      const alongZ = r.d >= r.w;
-      q.setFromAxisAngle(up, alongZ ? 0 : Math.PI / 2);
-      s.set(alongZ ? r.w : r.d, r.h, alongZ ? r.d : r.w);
-      p.set(r.x, r.y, r.z);
-      m.compose(p, q, s); roofs.setMatrixAt(i, m); roofs.setColorAt(i, col.setHex(r.color));
-    });
-    roofs.castShadow = true; roofs.receiveShadow = true;
-    scene.add(roofs);
+    scene.add(tiled(this.roofs, (r) => [r.x, r.z], (list) => {
+      const roofs = new THREE.InstancedMesh(pr, roofMat, list.length);
+      list.forEach((r, i) => {
+        const alongZ = r.d >= r.w;
+        q.setFromAxisAngle(up, alongZ ? 0 : Math.PI / 2);
+        s.set(alongZ ? r.w : r.d, r.h, alongZ ? r.d : r.w);
+        p.set(r.x, r.y, r.z);
+        m.compose(p, q, s); roofs.setMatrixAt(i, m); roofs.setColorAt(i, col.setHex(r.color));
+      });
+      roofs.castShadow = true; roofs.receiveShadow = true;
+      return roofs;
+    }));
 
     // Abandoned cars.
     const carGeo = new THREE.BoxGeometry(1.8, 1.4, 4.2); carGeo.translate(0, 0.7, 0);
     const carMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5, metalness: 0.4 });
     patchFloodMaterial(carMat, uniforms, false);
-    const cars = new THREE.InstancedMesh(carGeo, carMat, this.cars.length);
-    this.cars.forEach((c, i) => {
-      q.setFromAxisAngle(up, c.rot); p.set(c.x, c.y, c.z); s.set(1, 1, 1);
-      m.compose(p, q, s); cars.setMatrixAt(i, m); cars.setColorAt(i, col.setHex(c.color));
-    });
-    scene.add(cars);
+    scene.add(tiled(this.cars, (c) => [c.x, c.z], (list) => {
+      const cars = new THREE.InstancedMesh(carGeo, carMat, list.length);
+      list.forEach((c, i) => {
+        q.setFromAxisAngle(up, c.rot); p.set(c.x, c.y, c.z); s.set(1, 1, 1);
+        m.compose(p, q, s); cars.setMatrixAt(i, m); cars.setColorAt(i, col.setHex(c.color));
+      });
+      cars.layers.set(LAYER_NO_REFLECT);
+      return cars;
+    }));
 
     // Lighthouse.
     const lh = new THREE.Group();

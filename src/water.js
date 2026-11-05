@@ -13,7 +13,15 @@ const BASE = [
   { L: 4.4, A: 0.016, a: 0.3 },
   { L: 2.7, A: 0.008, a: -1.2 },
 ];
-const NDISP = 4;
+const NDISP = 3; // longest three waves displace geometry (shortest 23 m: >5 vertices per wavelength)
+// Capillary/short gravity ripples for shading only: fixed world directions (golden-angle spread),
+// geometric wavelengths 0.35–2.3 m, deep-water dispersion with surface tension.
+const RIPPLES = Array.from({ length: 12 }, (_, i) => {
+  const lambda = 0.35 * Math.pow(1.185, i);
+  const k = (2 * Math.PI) / lambda;
+  const angle = i * 2.39996 + 0.7;
+  return { lambda, k, angle, dx: Math.cos(angle), dz: Math.sin(angle), omega: Math.sqrt(9.81 * k + 7.4e-5 * k * k * k), phase: (i * 1.618) % (2 * Math.PI), amp: 0.045 / k };
+});
 const Q = 1.0;
 const SWELL = -Math.PI / 2; // swell travels north (-z), in from the open sea
 const FADE0 = 330, FADE1 = 440;
@@ -49,6 +57,7 @@ export class Water {
       uMurk: { value: new THREE.Color(0.17, 0.17, 0.1) },
       uRing: { value: 0 },
       uRefl: { value: null }, uReflMatrix: { value: new THREE.Matrix4() }, uReflOn: { value: 0 },
+      uRip: { value: RIPPLES.map(() => new THREE.Vector4()) }, uRipW: { value: RIPPLES.map((r) => r.omega) }, uRipPh: { value: RIPPLES.map((r) => r.phase) },
       ...THREE.UniformsLib.fog,
     };
     const matNear = new THREE.ShaderMaterial({
@@ -58,7 +67,7 @@ export class Water {
     const matFar = matNear.clone();
     matFar.uniforms = { ...this.uniforms, uRing: { value: 1 } };
 
-    const size = 900, seg = 300;
+    const size = 900, seg = 200; // ~4.5 m grid; finer detail comes from the shading ripples
     const g = new THREE.PlaneGeometry(size, size, seg, seg); g.rotateX(-Math.PI / 2);
     this.snap = size / seg;
     this.near = new THREE.Mesh(g, matNear);
@@ -68,9 +77,17 @@ export class Water {
     this.updateUniforms();
   }
 
-  setSeaState(sea) {
+  setSeaState(sea, windAngle = 0, windSpeed = 5, rain = 0) {
     this.sea = sea;
     for (const w of this.waves) w.A = w.A0 * sea;
+    // Ripple directions are fixed in world space; only their amplitudes follow the wind.
+    // (Rotating directions would sweep phase across the whole sea and make it appear to slide.)
+    const wf = 0.25 + Math.min(1.5, windSpeed / 9);
+    RIPPLES.forEach((r, i) => {
+      const align = Math.max(0, Math.cos(r.angle - windAngle));
+      const amp = r.amp * wf * (0.3 + 0.7 * align * align) * (1 + rain * (r.lambda < 0.8 ? 1.5 : 0.3));
+      this.uniforms.uRip.value[i].set(r.dx, r.dz, r.k, amp);
+    });
   }
 
   update(dt, level, focus) {
@@ -127,7 +144,8 @@ export class Water {
    */
   enableReflections(renderer) {
     const size = renderer.getDrawingBufferSize(new THREE.Vector2());
-    this.reflRT = new THREE.WebGLRenderTarget(Math.max(1, size.x >> 1), Math.max(1, size.y >> 1), { type: THREE.HalfFloatType, samples: 2 });
+    // ~40% of screen resolution is plenty once the waves distort it; no MSAA needed.
+    this.reflRT = new THREE.WebGLRenderTarget(Math.max(1, Math.round(size.x * 0.4)), Math.max(1, Math.round(size.y * 0.4)), { type: THREE.HalfFloatType });
     this.reflCam = new THREE.PerspectiveCamera();
     this.clipPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
     this.uniforms.uRefl.value = this.reflRT.texture;
@@ -137,7 +155,7 @@ export class Water {
   resizeReflections(renderer) {
     if (!this.reflRT || !this.reflectionsOn) return;
     const size = renderer.getDrawingBufferSize(new THREE.Vector2());
-    this.reflRT.setSize(Math.max(1, size.x >> 1), Math.max(1, size.y >> 1));
+    this.reflRT.setSize(Math.max(1, Math.round(size.x * 0.4)), Math.max(1, Math.round(size.y * 0.4)));
   }
   renderReflection(renderer, scene, camera) {
     if (!this.reflRT) return;
@@ -204,6 +222,7 @@ uniform vec4 uWaves[7];
 uniform float uOmega[7];
 uniform vec3 uSunDir, uSunColor, uSkyColor, uHorizon, uDeep, uShallow, uMurk;
 uniform sampler2D uRefl; uniform mat4 uReflMatrix; uniform float uReflOn;
+uniform vec4 uRip[12]; uniform float uRipW[12]; uniform float uRipPh[12];
 varying vec3 vWorld; varying vec2 vP0; varying float vAtten; varying float vDepth;
 #include <common>
 #include <fog_pars_fragment>
@@ -220,13 +239,18 @@ void main(){
     float c = cos(f);
     n.x -= w.x * WA * c; n.z -= w.y * WA * c; n.y -= ${Q.toFixed(2)} * WA * sin(f);
   }
-  // capillary ripples driven by wind (and rain)
-  vec2 rp = vWorld.xz * 0.45 + uWind * uTime * 0.25;
-  float e = 0.15;
-  float r0 = vnoise(rp) + 0.5 * vnoise(rp * 2.7 + 3.1);
-  float rx = vnoise(rp + vec2(e, 0.0)) + 0.5 * vnoise((rp + vec2(e, 0.0)) * 2.7 + 3.1);
-  float rz = vnoise(rp + vec2(0.0, e)) + 0.5 * vnoise((rp + vec2(0.0, e)) * 2.7 + 3.1);
-  float rs = (0.05 + 0.04 * uSea + 0.25 * uRain) * vAtten;
+  // Short ripples: travelling waves with their own speeds and fixed directions, evaluated at the
+  // rest position so they ride the swell's orbital motion. Each fades out before it can alias.
+  float camDist = length(cameraPosition - vWorld);
+  vec2 rg = vec2(0.0);
+  for (int i = 0; i < 12; i++) {
+    vec4 r = uRip[i];
+    float fade = clamp(1.0 - camDist * r.z / 950.0, 0.0, 1.0);
+    if (fade <= 0.0) continue;
+    float ph = r.z * dot(r.xy, vP0) - uRipW[i] * uTime + uRipPh[i];
+    rg += r.xy * (r.z * r.w * cos(ph) * fade);
+  }
+  rg *= (0.6 + 0.4 * vAtten);
   float rr = 0.0;
   if (uRain > 0.01) {
     vec2 q = vWorld.xz * 3.5; vec2 id = floor(q); vec2 fq = fract(q) - 0.5;
@@ -234,13 +258,9 @@ void main(){
     float ring = abs(length(fq) - t * 0.4);
     rr = (1.0 - smoothstep(0.0, 0.04, ring)) * (1.0 - t) * step(0.4, h21(id + 0.37)) * uRain * 0.6;
   }
-  // fine second ripple octave
-  vec2 rp2 = vWorld.xz * 1.6 - uWind.yx * uTime * 0.4;
-  float q0 = vnoise(rp2), qx = vnoise(rp2 + vec2(e, 0.0)), qz = vnoise(rp2 + vec2(0.0, e));
-  n = normalize(n + vec3(-(rx - r0) / e, 0.0, -(rz - r0) / e) * rs + vec3(-(qx - q0) / e, 0.0, -(qz - q0) / e) * rs * 0.45 + vec3(rr * 0.6, 0.0, rr * 0.4));
-  // soften detail with distance: stands in for normal-map mipmapping, kills sparkle aliasing
-  float camDist = length(cameraPosition - vWorld);
-  n = normalize(mix(n, vec3(0.0, 1.0, 0.0), smoothstep(120.0, 1400.0, camDist) * 0.75));
+  n = normalize(n - vec3(rg.x, 0.0, rg.y) + vec3(rr * 0.6, 0.0, rr * 0.4));
+  // soften the remaining detail with distance (stands in for normal-map mipmapping)
+  n = normalize(mix(n, vec3(0.0, 1.0, 0.0), smoothstep(200.0, 1600.0, camDist) * 0.6));
 
   vec3 V = normalize(cameraPosition - vWorld);
   float ndv = max(dot(n, V), 0.0);
@@ -271,7 +291,8 @@ void main(){
   float nh = max(dot(n, H), 0.0);
   col += uSunColor * (pow(nh, 350.0) * 5.0 + pow(nh, 40.0) * 0.12) * uSunInt;
 
-  float fn = vnoise(vWorld.xz * 0.7 + uTime * 0.25) * vnoise(vWorld.xz * 1.9 - uTime * 0.17);
+  vec2 wob = vec2(sin(uTime * 0.11), cos(uTime * 0.083)) * 0.6;
+  float fn = vnoise(vP0 * 0.7 + wob) * vnoise(vP0 * 1.9 - wob * 1.3 + 5.0);
   float foamCrest = smoothstep(0.65, 1.2, crest) * smoothstep(0.9, 1.8, uSea);
   float shore = (1.0 - smoothstep(0.0, 1.4, vDepth)) * step(-0.6, vDepth);
   float foam = clamp((foamCrest + shore * 0.9) * (0.35 + fn * 1.6), 0.0, 1.0);

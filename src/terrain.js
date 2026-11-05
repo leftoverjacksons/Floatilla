@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { fbm, smoothstep, mulberry32, rand } from './util.js';
 import { patchFloodMaterial } from './shaders.js';
+import { tiled, LAYER_NO_REFLECT } from './tiles.js';
 
 // World layout: ocean to the south (+z), harbor shoreline near z = 0,
 // city rising inland to the north (-z), ridges on the east/west/north rim.
@@ -77,20 +78,28 @@ export class FloorMap {
 }
 
 export function buildTerrain(scene, uniforms, city) {
-  const seg = 320;
-  const geo = new THREE.PlaneGeometry(WORLD_RECT.size, WORLD_RECT.size, seg, seg);
-  geo.rotateX(-Math.PI / 2);
-  geo.translate(WORLD_RECT.minx + WORLD_RECT.size / 2, 0, WORLD_RECT.minz + WORLD_RECT.size / 2);
-  const pos = geo.attributes.position;
-  const colors = new Float32Array(pos.count * 3);
+  // 4x4 tiles of 64 segments (~15.6 m spacing) so off-screen tiles are culled in every pass.
+  // Normals come from the height function itself, so tile edges shade seamlessly.
+  const TILES = 4, seg = 64, tileSize = WORLD_RECT.size / TILES;
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0 });
+  patchFloodMaterial(mat, uniforms, false);
   const c = new THREE.Color();
   const sand = new THREE.Color(0.72, 0.66, 0.48), grass = new THREE.Color(0.27, 0.42, 0.18),
     dry = new THREE.Color(0.45, 0.45, 0.26), rock = new THREE.Color(0.42, 0.4, 0.37),
     seabed = new THREE.Color(0.36, 0.34, 0.27), paved = new THREE.Color(0.3, 0.3, 0.31);
+  const group = new THREE.Group();
+  for (let ti = 0; ti < TILES; ti++) for (let tj = 0; tj < TILES; tj++) {
+  const geo = new THREE.PlaneGeometry(tileSize, tileSize, seg, seg);
+  geo.rotateX(-Math.PI / 2);
+  geo.translate(WORLD_RECT.minx + (ti + 0.5) * tileSize, 0, WORLD_RECT.minz + (tj + 0.5) * tileSize);
+  const pos = geo.attributes.position, nrm = geo.attributes.normal;
+  const colors = new Float32Array(pos.count * 3);
   for (let k = 0; k < pos.count; k++) {
     const x = pos.getX(k), z = pos.getZ(k);
     const h = groundHeight(x, z);
     pos.setY(k, h);
+    const e = 3, gx = groundHeight(x + e, z) - groundHeight(x - e, z), gz = groundHeight(x, z + e) - groundHeight(x, z - e);
+    const nl = Math.hypot(gx, 2 * e, gz); nrm.setXYZ(k, -gx / nl, 2 * e / nl, -gz / nl);
     const n = fbm(x * 0.02, z * 0.02, 2, 9) * 0.5 + 0.5;
     if (h < -1.5) c.copy(seabed);
     else if (h < 1.8) c.copy(sand);
@@ -100,12 +109,13 @@ export function buildTerrain(scene, uniforms, city) {
     colors[k * 3] = c.r; colors[k * 3 + 1] = c.g; colors[k * 3 + 2] = c.b;
   }
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  geo.computeVertexNormals();
-  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0 });
-  patchFloodMaterial(mat, uniforms, false);
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.receiveShadow = true;
-  scene.add(mesh);
+  geo.computeBoundingSphere();
+  const tile = new THREE.Mesh(geo, mat);
+  tile.receiveShadow = true;
+  group.add(tile);
+  }
+  scene.add(group);
+  const mesh = group;
 
   // Trees: instanced trunks + canopies on land outside building footprints.
   const rng = mulberry32(77);
@@ -116,8 +126,7 @@ export function buildTerrain(scene, uniforms, city) {
   const crownMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 });
   patchFloodMaterial(trunkMat, uniforms, false);
   patchFloodMaterial(crownMat, uniforms, false);
-  const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, count);
-  const crowns = new THREE.InstancedMesh(crownGeo, crownMat, count);
+  const trees = [];
   const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3();
   let placed = 0, tries = 0;
   const col = new THREE.Color();
@@ -129,16 +138,23 @@ export function buildTerrain(scene, uniforms, city) {
     if (inCity(x, z) && rng() > 0.12) continue;
     if (city && city.pointInBuilding(x, z, 3)) continue;
     const ht = rand(rng, 5, 11);
-    p.set(x, h - 0.3, z); s.set(1, ht * 0.4, 1); m.compose(p, q, s);
-    trunks.setMatrixAt(placed, m);
-    p.set(x, h + ht * 0.25, z); s.set(rand(rng, 1.6, 2.8), ht * 0.85, 0); s.z = s.x; m.compose(p, q, s);
-    crowns.setMatrixAt(placed, m);
-    col.setHSL(rand(rng, 0.24, 0.33), rand(rng, 0.35, 0.55), rand(rng, 0.16, 0.28));
-    crowns.setColorAt(placed, col);
+    trees.push({ x, z, h, ht, w: rand(rng, 1.6, 2.8), hsl: [rand(rng, 0.24, 0.33), rand(rng, 0.35, 0.55), rand(rng, 0.16, 0.28)] });
     placed++;
   }
-  trunks.count = crowns.count = placed;
-  trunks.castShadow = crowns.castShadow = true;
-  scene.add(trunks, crowns);
+  // Tiled so each pass culls whole tiles; kept out of the water reflection (too small to matter there).
+  const addTiles = (group) => { group.children.forEach((o) => { o.layers.set(LAYER_NO_REFLECT); o.castShadow = true; }); scene.add(group); };
+  addTiles(tiled(trees, (t) => [t.x, t.z], (list) => {
+    const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, list.length);
+    list.forEach((t, i) => { p.set(t.x, t.h - 0.3, t.z); s.set(1, t.ht * 0.4, 1); m.compose(p, q, s); trunks.setMatrixAt(i, m); });
+    return trunks;
+  }));
+  addTiles(tiled(trees, (t) => [t.x, t.z], (list) => {
+    const crowns = new THREE.InstancedMesh(crownGeo, crownMat, list.length);
+    list.forEach((t, i) => {
+      p.set(t.x, t.h + t.ht * 0.25, t.z); s.set(t.w, t.ht * 0.85, t.w); m.compose(p, q, s); crowns.setMatrixAt(i, m);
+      crowns.setColorAt(i, col.setHSL(...t.hsl));
+    });
+    return crowns;
+  }));
   return mesh;
 }
