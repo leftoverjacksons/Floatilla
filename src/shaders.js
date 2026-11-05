@@ -46,13 +46,18 @@ ${windows ? `
     vec2 f = fract(cell); vec2 id = floor(cell);
     float mx = vStyle < 1.5 ? 0.09 : 0.32;
     float my = vStyle < 1.5 ? 0.22 : 0.3;
-    float win = step(mx, f.x) * step(f.x, 1.0 - mx) * step(my, f.y) * step(f.y, 1.0 - my);
-    if (vStyle > 2.5) win *= step(0.55, f.y);
+    vec2 aa = max(fwidth(cell), vec2(0.001));
+    float win = smoothstep(mx - aa.x, mx + aa.x, f.x) * (1.0 - smoothstep(1.0 - mx - aa.x, 1.0 - mx + aa.x, f.x))
+      * smoothstep(my - aa.y, my + aa.y, f.y) * (1.0 - smoothstep(1.0 - my - aa.y, 1.0 - my + aa.y, f.y));
+    if (vStyle > 2.5) win *= smoothstep(0.55 - aa.y, 0.55 + aa.y, f.y);
+    float detail = 1.0 - smoothstep(0.25, 0.75, max(aa.x, aa.y));
+    float coverage = (1.0 - 2.0 * mx) * (1.0 - 2.0 * my) * (vStyle > 2.5 ? 0.3 : 1.0);
+    win = mix(coverage, win, detail);
     float r = fhash12(id + floor(vFWP.xz * 0.013) * 7.13);
     vec3 glass = vStyle < 1.5 ? vec3(0.09, 0.13, 0.17) : vec3(0.07, 0.08, 0.09);
     diffuseColor.rgb = mix(diffuseColor.rgb, glass, win * 0.85);
     fWin = win * (vStyle < 1.5 ? 1.0 : 0.7) * step(uLevel, vFWP.y);
-    fLit = win * step(1.0 - 0.3 * uPower, r) * step(uLevel + 2.0, vFWP.y) * (0.5 + fhash12(id * 1.37));
+    fLit = win * mix(0.3 * uPower, step(1.0 - 0.3 * uPower, r) * (0.5 + fhash12(id * 1.37)), detail) * step(uLevel + 2.0, vFWP.y);
   }
 }` : ''}
 // Surface weathering: large-scale albedo variation everywhere, plus floor slabs,
@@ -75,7 +80,7 @@ ${windows ? `
 }
 float fUnder = clamp((uLevel - vFWP.y) / 5.0, 0.0, 1.0);
 diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.06, 0.11, 0.1), fUnder * 0.85);
-float fStain = (1.0 - step(uLevel + 1.6, vFWP.y)) * step(uLevel, vFWP.y) * smoothstep(uLevel + 1.6, uLevel, vFWP.y);
+float fStain = (1.0 - step(uLevel + 1.6, vFWP.y)) * step(uLevel, vFWP.y) * (1.0 - smoothstep(uLevel, uLevel + 1.6, vFWP.y));
 diffuseColor.rgb *= 1.0 - fStain * 0.4;`)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
 roughnessFactor = mix(roughnessFactor, 0.06, fWin);`)

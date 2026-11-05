@@ -22,6 +22,7 @@ export class Fx {
         void main(){ vA = aAlpha; vC = aColor; vec4 mv = modelViewMatrix * vec4(position,1.0); gl_PointSize = aSize * uScale / -mv.z; gl_Position = projectionMatrix * mv; }`,
       fragmentShader: `varying float vA; varying vec3 vC; uniform float uLight;
         void main(){ vec2 d = gl_PointCoord - 0.5; float r = dot(d,d); if (r > 0.25) discard; gl_FragColor = vec4(vC * uLight, vA * (1.0 - r * 4.0));
+        #include <tonemapping_fragment>
         #include <colorspace_fragment>
         }`,
       transparent: true, depthWrite: false,
@@ -55,6 +56,7 @@ export class Fx {
           float a = lace * edge * vA;
           if (a < 0.01) discard;
           gl_FragColor = vec4(vec3(0.9, 0.93, 0.94) * uLight, a);
+          #include <tonemapping_fragment>
           #include <colorspace_fragment>
         }`,
       transparent: true, depthWrite: false,
@@ -73,7 +75,7 @@ export class Fx {
     d.x[i] = x; d.y[i] = y; d.z[i] = z; d.vx[i] = vx; d.vz[i] = vz; d.life[i] = life; d.max[i] = life; d.size[i] = size; d.rot[i] = Math.random() * 6.28;
   }
   emit(x, y, z, vx, vy, vz, life, size, kind = 0, r = 0.92, gr = 0.95, b = 0.95) {
-    if (kind === 0) return this.emitFoam(x, y, z, vx, vz, life * 1.6, size * 1.3);
+    if (kind === 0) return this.emitFoam(x, y, z, vx, vz, life * 1.1, size * 0.95);
     const i = this.head; this.head = (this.head + 1) % this.max;
     this.pos[i * 3] = x; this.pos[i * 3 + 1] = y; this.pos[i * 3 + 2] = z;
     this.vel[i * 3] = vx; this.vel[i * 3 + 1] = vy; this.vel[i * 3 + 2] = vz;
@@ -111,7 +113,7 @@ export class Fx {
       const sc = d.size[i] * (0.5 + t * 1.6);
       this._p.set(d.x[i], d.y[i], d.z[i]); this._q.setFromAxisAngle(this._up, d.rot[i] + t * 0.3); this._s.set(sc, 1, sc);
       m.compose(this._p, this._q, this._s); this.decals.setMatrixAt(i, m);
-      al[i] = Math.min(1, t * 6) * (1 - t) * 0.85;
+      al[i] = Math.min(1, t * 6) * (1 - t) * 0.48;
     }
     this.decals.instanceMatrix.needsUpdate = true; this.dAlpha.needsUpdate = true;
     this.points.geometry.attributes.position.needsUpdate = true;

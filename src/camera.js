@@ -5,7 +5,7 @@ import { clamp, angleDiff, damp } from './util.js';
 export class CameraController {
   constructor(camera, dom) {
     this.camera = camera;
-    this.yaw = Math.PI; this.pitch = 0.32; this.dist = 22;
+    this.yaw = Math.PI; this.pitch = 0.4; this.dist = 25;
     this.target = new THREE.Vector3();
     this.dragging = false; this.lastDrag = -10; this.time = 0;
     this.shake = 0;

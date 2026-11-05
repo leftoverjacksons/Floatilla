@@ -22,21 +22,25 @@ import { RadialMenu } from './radial.js';
 import { Landmarks, LANDMARK_RESERVED } from './landmarks.js';
 import { LAYER_NO_REFLECT } from './tiles.js';
 import { readSave, writeSave, restore, consumeLoadFlag, requestLoadOnReload } from './save.js';
+import { FrameStats } from './performance.js';
 
 class Game {
   constructor() {
     this.rng = mulberry32(20261104);
     const renderer = (this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' }));
-    // Quality: URL ?q= overrides the saved choice; default high.
+    // Quality: URL ?q= overrides the saved choice; default to the balanced renderer.
     let q = new URLSearchParams(location.search).get('q');
     try { q = q || localStorage.getItem('floatilla-quality'); } catch { /* ignore */ }
-    this.quality = ['low', 'medium', 'high'].includes(q) ? q : 'high';
+    this.quality = ['low', 'medium', 'high'].includes(q) ? q : 'medium';
     const low = this.quality === 'low';
     renderer.setPixelRatio(low ? 0.75 : Math.min(window.devicePixelRatio, 1.75));
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.shadowMap.enabled = !low;
     this.fps = 60;
+    this.frameStats = new FrameStats();
+    this.profile = new URLSearchParams(location.search).has('profile');
+    renderer.info.autoReset = false;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     document.getElementById('app').appendChild(renderer.domElement);
 
@@ -46,7 +50,8 @@ class Game {
     window.addEventListener('resize', () => {
       this.camera.aspect = window.innerWidth / window.innerHeight; this.camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
-      if (this.composer) { this.composer.setSize(window.innerWidth, window.innerHeight); this.water.resizeReflections(renderer); }
+      if (this.composer) this.composer.setSize(window.innerWidth, window.innerHeight);
+      this.water.resizeReflections(renderer);
     });
 
     // Shared uniforms for flood-aware materials (buildings, terrain, props).
@@ -99,26 +104,27 @@ class Game {
 
   /**
    * Quality presets, switchable at runtime from the action wheel:
-   *  low    — direct render, no shadows, 0.75 pixel ratio
-   *  medium — MSAA + bloom + sky environment light, 2048 shadows, no water reflections
-   *  high   — medium plus planar water reflections and 4096 shadows
+   *  low    — direct render, simplified water, no shadows
+   *  medium — direct render, 1024 shadows, no HDR post-processing or reflections
+   *  high   — subtle bloom, sky environment light, 2048 shadows and reflections
    */
   applyQuality(q, initial = false) {
     const r = this.renderer;
     this.quality = q;
     try { localStorage.setItem('floatilla-quality', q); } catch { /* ignore */ }
     const shadows = q !== 'low';
-    this.baseRatio = q === 'low' ? 0.75 : Math.min(window.devicePixelRatio, q === 'high' ? 1.5 : 1.25);
-    this.resScale = this.resScale || 1;
+    this.baseRatio = Math.min(window.devicePixelRatio, q === 'high' ? 1.25 : 1);
+    this.resScale = 1;
+    this.resTimer = 0;
     r.setPixelRatio(this.baseRatio * this.resScale);
     r.setSize(window.innerWidth, window.innerHeight);
-    if (q !== 'low' && !this.composer) this.setupHighQuality();
-    if (this.composer) this.composer.setSize(window.innerWidth, window.innerHeight);
+    if (q === 'high' && !this.composer) this.setupHighQuality();
+    if (this.composer) { this.composer.setPixelRatio(r.getPixelRatio()); this.composer.setSize(window.innerWidth, window.innerHeight); }
     const sun = this.env.sun;
     sun.shadow.camera.layers.enable(LAYER_NO_REFLECT);
-    const size = q === 'high' ? 4096 : 2048;
+    const size = q === 'high' ? 2048 : 1024;
     // shadow coverage around the camera focus: wider on high so nearby blocks and landmarks cast shadows too
-    const ext = q === 'high' ? 150 : 90, sc = sun.shadow.camera;
+    const ext = q === 'high' ? 110 : 65, sc = sun.shadow.camera;
     sc.left = -ext; sc.right = ext; sc.top = ext; sc.bottom = -ext; sc.far = 1100; sc.updateProjectionMatrix();
     this.env.shadowStep = (2 * ext) / size;
     if (sun.shadow.mapSize.x !== size) { sun.shadow.mapSize.set(size, size); if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; } }
@@ -127,41 +133,41 @@ class Game {
       if (!initial) this.scene.traverse((o) => { if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => (m.needsUpdate = true)); });
     }
     this.water.reflectionsOn = q === 'high';
+    this.water.setQuality(q);
     this.water.uniforms.uReflOn.value = q === 'high' ? 1 : 0;
     if (q === 'high') this.water.resizeReflections(r);
-    if (q === 'low') this.scene.environment = null;
+    if (q !== 'high') this.scene.environment = null;
     else if (this.envRT) this.scene.environment = this.envRT.texture;
   }
 
   /**
-   * Dynamic resolution: drop render resolution in 10% steps while the frame rate is under ~50 fps,
-   * and creep back up when there is headroom. Keeps the frame rate steady instead of the image sharp.
+   * Preserve a readable image: scale gently between 80–100%, with recovery headroom.
    */
   adaptResolution(dt) {
     if (!this.started || this.paused) return;
     this.resTimer = (this.resTimer || 0) + dt;
     if (this.resTimer < 1.5) return;
     this.resTimer = 0;
-    const minScale = this.quality === 'low' ? 0.8 : 0.55;
+    const minScale = 0.8;
     let s = this.resScale;
-    if (this.fps < 48 && s > minScale) s = Math.max(minScale, s - 0.1);
+    if (this.fps < 45 && s > minScale) s = Math.max(minScale, s - 0.05);
     else if (this.fps > 58 && s < 1) s = Math.min(1, s + 0.05);
     if (s === this.resScale) return;
     this.resScale = s;
     this.renderer.setPixelRatio(this.baseRatio * s);
     this.renderer.setSize(window.innerWidth, window.innerHeight);
-    if (this.composer) this.composer.setSize(window.innerWidth, window.innerHeight);
+    if (this.composer) { this.composer.setPixelRatio(this.renderer.getPixelRatio()); this.composer.setSize(window.innerWidth, window.innerHeight); }
     if (this.water.reflectionsOn) this.water.resizeReflections(this.renderer);
   }
 
-  /** Builds the post-processing chain and environment light once (used by medium and high). */
+  /** Builds the optional high-quality post-processing chain and environment light once. */
   setupHighQuality() {
     const r = this.renderer;
     r.shadowMap.type = THREE.PCFSoftShadowMap;
     this.water.enableReflections(r);
     this.water.hideInReflection.push(this.fx.points, this.fx.decals, this.env.rain);
     const size = r.getDrawingBufferSize(new THREE.Vector2());
-    const rt = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples: 4 });
+    const rt = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples: 2 });
     this.composer = new EffectComposer(r, rt);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     // Safety net: replace any non-finite pixel and clamp extreme HDR values before bloom.
@@ -182,13 +188,13 @@ class Game {
       fragmentShader: `uniform sampler2D tDiffuse; varying vec2 vUv;
         void main(){ vec4 c = texture2D(tDiffuse, vUv);
           vec2 d = (vUv - 0.5) * vec2(1.0, 0.8);
-          c.rgb *= mix(0.8, 1.0, smoothstep(0.75, 0.2, length(d)));
+          c.rgb *= mix(0.92, 1.0, 1.0 - smoothstep(0.2, 0.75, length(d)));
           float l = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722));
-          c.rgb *= mix(vec3(1.0), vec3(0.95, 1.0, 1.05), smoothstep(0.35, 0.0, l) * 0.6);
+          c.rgb *= mix(vec3(1.0), vec3(0.95, 1.0, 1.05), (1.0 - smoothstep(0.0, 0.35, l)) * 0.6);
           c.rgb *= mix(vec3(1.0), vec3(1.04, 1.0, 0.95), smoothstep(0.5, 2.5, l) * 0.6);
           gl_FragColor = c; }`,
     });
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.35, 0.55, 0.92);
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.12, 0.35, 1.4);
     this.composer.addPass(this.bloom);
     this.composer.addPass(this.gradePass);
     this.composer.addPass(new OutputPass());
@@ -204,8 +210,8 @@ class Game {
   updateEnvMap(dt) {
     this.envTimer -= dt;
     const sun = this.env.sunDir;
-    if (this.envTimer > 0 && sun.distanceTo(this.envSun) < 0.03) return;
-    this.envTimer = 4; this.envSun.copy(sun);
+    if (this.envRT && (this.envTimer > 0 || sun.distanceTo(this.envSun) < 0.06)) return;
+    this.envTimer = 12; this.envSun.copy(sun);
     const old = this.envRT;
     this.envRT = this.pmrem.fromScene(this.envScene, 0.02, 1, 3000);
     this.scene.environment = this.envRT.texture;
@@ -260,6 +266,7 @@ class Game {
     const existing = readSave();
     const start = () => {
       title.style.display = 'none'; this.started = true; this.audio.init();
+      document.getElementById('hud-toggle').style.display = '';
       if (this.loadedFromSave) this.ui.toast(`Voyage resumed: ${this.env.timeString()}, flood at ${this.env.level.toFixed(1)} m.`, 'good');
       else {
         this.ui.toast('Day 1. Just you, the dog and a tired old sloop. The harbor is already under water. Find people. Mend the boat.', 'info');
@@ -277,6 +284,7 @@ class Game {
       cta.textContent = 'New voyage (overwrites save on next save)';
     } else cont.style.display = 'none';
     cta.onclick = (e) => { e.stopPropagation(); start(); };
+    document.getElementById('hud-toggle').onclick = () => this.toggleHUD();
     window.addEventListener('keydown', (e) => {
       if (!this.started || this.over) return;
       const k = e.key.toLowerCase();
@@ -288,6 +296,7 @@ class Game {
         case 'c': this.ui.toggleCraft(); break;
         case 'escape': if (this.ui.craftOpen) this.ui.toggleCraft(false); else { this.toggleHelp(false); this.ui.toggleJournal(false); document.getElementById('note').style.display = 'none'; } break;
         case 'h': case '?': this.toggleHelp(); break;
+        case 'u': this.toggleHUD(); break;
         case 'p': if (!this.ui.craftOpen) this.paused = !this.paused; break;
       }
       if (this.paused) return;
@@ -323,7 +332,7 @@ class Game {
       interact: () => this.world.interact(false),
       salvage: () => { const it = this.world.findInteraction(); if (it && it.kind === 'claim') this.world.interact(true); },
       sails: () => { if (pl.rigs.length) { pl.sailsUp = !pl.sailsUp; ui.toast(pl.sailsUp ? 'Sails up.' : 'Sails furled.'); } else ui.toast('No sails on this boat — build a Mast & Sail in the Workshop.', 'warn'); },
-      stop: () => { pl.throttle = 0; },
+      stop: () => { pl.throttle = 0; pl.sailsUp = false; ui.toast('Engine idle, sails furled. The boat will coast to a stop.'); },
       craft: () => ui.toggleCraft(),
       switchBoat: (dir = 1) => { const b = f.cycleLead(dir); ui.toast(b ? `You take the helm of the ${b.name}.` : 'No other boats in the floatilla yet.'); },
       detach: () => ui.toast(f.boats.length > 1 ? f.toggleDetach() : 'You have no floatilla to detach from yet.'),
@@ -350,7 +359,7 @@ class Game {
     if (it && it.kind === 'claim') items.push({ icon: '⚒', label: 'Salvage', key: 'X', desc: 'Strip this boat for wood, scrap, cloth and parts. It sinks.', run: A.salvage });
     items.push(
       { icon: '⛵', label: pl.sailsUp ? 'Furl sails' : 'Raise sails', key: 'R', disabled: !pl.rigs.length, why: 'This boat has no mast. Build a Mast & Sail in the Workshop.', desc: 'Sails give no drive within about 35° of the wind.', run: A.sails },
-      { icon: '⏹', label: 'All stop', key: 'Space', disabled: pl.throttle === 0, why: 'Throttle is already at zero.', desc: 'Throttle to zero.', run: A.stop },
+      { icon: '⏹', label: 'All stop', key: 'Space', disabled: pl.throttle === 0 && !pl.sailsUp, why: 'Engine is idle and sails are furled.', desc: 'Idle the engine and furl sails. The boat still coasts.', run: A.stop },
       { icon: this.onFoot ? '☸' : '🚶', label: this.onFoot ? 'Take the helm' : 'Walk the deck', key: 'V', desc: this.onFoot ? 'Back to steering.' : 'Leave the wheel and explore the boat on foot (WASD, Shift to hurry). The boat holds her course.', run: A.walk },
       { icon: '📖', label: 'Journal', key: 'J', desc: 'Landmarks you have found, notes you have read, and when the flood will open the way to the rest.', run: A.journal },
       { icon: '🔨', label: 'Workshop', key: 'C', desc: 'Repairs, upgrades and boatbuilding. Pauses the game.', run: A.craft },
@@ -359,7 +368,7 @@ class Game {
       { icon: '⇄', label: 'Switch boat', key: 'Tab', disabled: !many, why: 'You have no other boats yet.', desc: 'Take the helm of the next boat; it becomes the lead.', run: () => A.switchBoat(1) },
       { icon: '🔦', label: pl.lightOn ? 'Light off' : 'Searchlight', key: 'L', disabled: !pl.count('light'), why: 'No searchlight fitted. Build one in the Workshop.', desc: 'Lights the way at night and deters raiders.', run: A.light },
       { icon: '⏩', label: `Time ×${this.env.timeScale === 1 ? 6 : this.env.timeScale === 6 ? 30 : 1}`, key: 'T', desc: `Currently ×${this.env.timeScale}.`, run: A.time },
-      { icon: '🖥', label: `Quality: ${this.quality}`, desc: `Next: ${{ low: 'medium', medium: 'high', high: 'low' }[this.quality]}. High adds water reflections (the most expensive part); medium keeps glow, shadows and antialiasing; low is plain and fastest. Currently ${Math.round(this.fps)} fps.`, run: () => { const n = { low: 'medium', medium: 'high', high: 'low' }[this.quality]; this.applyQuality(n); this.ui.toast(`Quality: ${n}`); } },
+      { icon: '🖥', label: `Quality: ${this.quality}`, desc: `Next: ${{ low: 'medium', medium: 'high', high: 'low' }[this.quality]}. Medium: crisp water and nearby shadows. High adds reflections and subtle bloom. Low removes shadows and simplifies water. Currently ${Math.round(this.fps)} fps.`, run: () => { const n = { low: 'medium', medium: 'high', high: 'low' }[this.quality]; this.applyQuality(n); this.ui.toast(`Quality: ${n}`); } },
       { icon: '💾', label: 'Save', key: 'K', desc: 'Save to this browser. Autosaves every 90 s.', run: A.save },
       { icon: '📂', label: 'Load', key: 'O', disabled: !readSave(), why: 'No save yet.', desc: 'Reload the last save.', run: A.load },
       { icon: '?', label: 'Help', key: 'H', desc: 'All controls.', run: A.help },
@@ -371,6 +380,13 @@ class Game {
     const el = document.getElementById('help');
     const show = v !== undefined ? v : el.style.display !== 'block';
     el.style.display = show ? 'block' : 'none';
+  }
+
+  toggleHUD() {
+    const hidden = document.body.classList.toggle('hud-hidden');
+    const button = document.getElementById('hud-toggle');
+    button.textContent = hidden ? 'Show HUD (U)' : 'Hide HUD (U)';
+    button.setAttribute('aria-pressed', String(hidden));
   }
 
   craft(id, boat) {
@@ -537,7 +553,17 @@ class Game {
 
   frame() {
     requestAnimationFrame(this.frame);
-    const rawDt = Math.min(this.clock.getDelta(), 0.05);
+    const cpuStart = performance.now();
+    this.renderer.info.reset();
+    const frameDt = this.clock.getDelta();
+    const rawDt = Math.min(frameDt, 0.05);
+    // Measure real elapsed time; only the simulation is capped after a long frame.
+    if (!document.hidden && frameDt > 0 && frameDt < 1) {
+      this.frameStats.add(frameDt);
+      this.fpsTime = (this.fpsTime || 0) + frameDt;
+      this.fpsFrames = (this.fpsFrames || 0) + 1;
+      if (this.fpsTime >= 0.5) { this.fps = this.fpsFrames / this.fpsTime; this.fpsTime = 0; this.fpsFrames = 0; }
+    }
     const dt = this.started && !this.paused && !this.over ? rawDt : 0;
     const env = this.env, f = this.fleet;
     const focus = f.player ? new THREE.Vector3(f.player.x, f.player.y, f.player.z) : this.camCtl.target;
@@ -597,17 +623,25 @@ class Game {
 
     if (pl) this.audio.update({ wind: env.windSpeed, rain: env.rainAmt, sea: this.water.sea, speed: pl.speed, engine: pl.engineOn, throttle: pl.throttle, power: pl.enginePower });
     if (this.started) this.ui.update(rawDt);
-    this.fps += (1 / Math.max(rawDt, 1e-3) - this.fps) * 0.05;
     this.adaptResolution(rawDt);
     // Shadows refresh every other frame: halves the cost of the shadow pass, imperceptible at sailing speeds.
     this.frameNo = (this.frameNo || 0) + 1;
     this.renderer.shadowMap.autoUpdate = false;
     if (this.renderer.shadowMap.enabled && this.frameNo % 2 === 0) this.renderer.shadowMap.needsUpdate = true;
-    if (this.composer && this.quality !== 'low') {
+    if (this.composer && this.quality === 'high') {
       this.updateEnvMap(rawDt);
       if (this.water.reflectionsOn) this.water.renderReflection(this.renderer, this.scene, this.camera);
       this.composer.render();
     } else this.renderer.render(this.scene, this.camera);
+    this.profileTimer = (this.profileTimer || 0) + frameDt;
+    if (this.profile && this.profileTimer >= 0.5) {
+      this.profileTimer = 0;
+      const stats = this.frameStats.summary(), info = this.renderer.info;
+      const panel = document.getElementById('profile');
+      panel.hidden = false;
+      // Includes main, shadow, reflection and post-processing draws. CPU is submission time, not GPU time.
+      panel.textContent = `${stats.fps.toFixed(1)} fps · mean ${stats.mean.toFixed(1)} ms · p95 ${stats.p95.toFixed(1)} ms\nCPU ${(performance.now() - cpuStart).toFixed(1)} ms · ${info.render.calls} draws · ${Math.round(info.render.triangles / 1000)}k triangles\n${info.memory.geometries} geometries · ${info.memory.textures} textures`;
+    }
   }
 }
 

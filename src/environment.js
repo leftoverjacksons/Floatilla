@@ -50,14 +50,15 @@ export class Environment {
       'gl_FragColor = vec4( retColor, 1.0 );', 'gl_FragColor = vec4( clamp( retColor, 0.0, 60.0 ), 1.0 );');
     this.sky.material.needsUpdate = true;
     const su = this.sky.material.uniforms;
-    su.turbidity.value = 6; su.rayleigh.value = 1.6; su.mieCoefficient.value = 0.004; su.mieDirectionalG.value = 0.85;
+    su.turbidity.value = 3; su.rayleigh.value = 1.6; su.mieCoefficient.value = 0.003; su.mieDirectionalG.value = 0.8;
 
     // Haze dome blends the horizon into the fog colour (and greys out the sky in storms).
     this.hazeMat = new THREE.ShaderMaterial({
       uniforms: { uColor: { value: new THREE.Color() }, uAmount: { value: 0 } },
       vertexShader: `varying vec3 vDir; void main(){ vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
       fragmentShader: `uniform vec3 uColor; uniform float uAmount; varying vec3 vDir;
-        void main(){ float a = clamp(smoothstep(0.32, -0.02, vDir.y) + uAmount, 0.0, 1.0); gl_FragColor = vec4(uColor, a);
+        void main(){ float a = clamp((1.0 - smoothstep(-0.02, 0.2, vDir.y)) * 0.65 + uAmount, 0.0, 1.0); gl_FragColor = vec4(uColor, a);
+        #include <tonemapping_fragment>
         #include <colorspace_fragment>
         }`,
       side: THREE.BackSide, transparent: true, depthWrite: false, fog: false,
@@ -74,7 +75,7 @@ export class Environment {
         float h(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
         float n(vec2 p){ vec2 i=floor(p), f=fract(p); vec2 u=f*f*(3.0-2.0*f);
           return mix(mix(h(i),h(i+vec2(1,0)),u.x), mix(h(i+vec2(0,1)),h(i+vec2(1,1)),u.x), u.y); }
-        float fbm(vec2 p){ float s=0.0, a=0.5; for(int i=0;i<5;i++){ s+=a*n(p); p*=2.07; a*=0.5; } return s; }
+        float fbm(vec2 p){ float s=0.0, a=0.5; for(int i=0;i<3;i++){ s+=a*n(p); p*=2.07; a*=0.5; } return s; }
         void main(){
           vec2 p = (vW.xz + uOffset) * 0.0011;
           float d = fbm(p);
@@ -84,6 +85,7 @@ export class Environment {
           float dist = length(vW.xz - uCam.xz);
           float fade = 1.0 - smoothstep(2500.0, 4200.0, dist);
           gl_FragColor = vec4(col, c * fade * 0.97);
+          #include <tonemapping_fragment>
           #include <colorspace_fragment>
         }`,
       transparent: true, depthWrite: false, fog: false, side: THREE.DoubleSide,
@@ -176,7 +178,7 @@ export class Environment {
     const day = this.dayFactor, night = this.night, cloud = this.cur.cloud;
     const su = this.sky.material.uniforms;
     su.sunPosition.value.copy(this.sunDir);
-    su.turbidity.value = 4 + cloud * 12; su.rayleigh.value = 1.2 + cloud * 2.5;
+    su.turbidity.value = 2.5 + cloud * 10; su.rayleigh.value = 1.2 + cloud * 2.5;
 
     this.sunColor.setRGB(1, lerp(0.55, 0.96, smoothstep(0, 0.4, elev)), lerp(0.3, 0.9, smoothstep(0, 0.45, elev)));
     const light = (0.22 + 0.78 * day) * (1 - cloud * 0.45);
@@ -204,9 +206,9 @@ export class Environment {
 
     const sceneFog = this.scene.fog;
     sceneFog.color.copy(this.fogColor).lerp(new THREE.Color(0.7, 0.75, 0.85), this.flash * 0.5);
-    sceneFog.far = this.cur.fog; sceneFog.near = Math.min(40, this.cur.fog * 0.1);
+    sceneFog.far = this.cur.fog; sceneFog.near = Math.min(180, this.cur.fog * 0.15);
     this.hazeMat.uniforms.uColor.value.copy(sceneFog.color);
-    this.hazeMat.uniforms.uAmount.value = smoothstep(0.5, 1.0, cloud) * 0.85 + smoothstep(600, 150, this.cur.fog) + this.flash * 0.2;
+    this.hazeMat.uniforms.uAmount.value = smoothstep(0.5, 1.0, cloud) * 0.85 + (1 - smoothstep(150, 600, this.cur.fog)) + this.flash * 0.2;
     this.renderer.toneMappingExposure = lerp(0.42, 0.62, day) * (1 - cloud * 0.12);
 
     // Lights.
@@ -220,7 +222,7 @@ export class Environment {
     else { this.sun.color.setRGB(0.6, 0.7, 1.0); this.sun.intensity = 0.6 * (1 - cloud * 0.8); }
     this.hemi.color.copy(new THREE.Color(0.35, 0.42, 0.62)).lerp(this.skyTop, day).lerp(new THREE.Color(0.75, 0.82, 0.9), 0.4 * day);
     this.hemi.groundColor.setRGB(0.12, 0.14, 0.12).multiplyScalar(0.4 + day);
-    this.hemi.intensity = (0.55 + 1.1 * day * (1 - cloud * 0.25)) * (this.scene.environment ? 0.55 : 1);
+    this.hemi.intensity = (0.65 + 1.45 * day * (1 - cloud * 0.25)) * (this.scene.environment ? 0.55 : 1);
     // Sky-baked environment light: dimmed under cloud (the baked sky has no clouds) and at night.
     this.scene.environmentIntensity = (0.15 + 0.75 * day) * (1 - cloud * 0.6);
     this.flashLight.intensity = this.flash * 4;

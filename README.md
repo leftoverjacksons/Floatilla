@@ -18,7 +18,7 @@ npm install
 npm run dev
 ```
 
-Open the printed URL. Quality can be switched in-game from the action wheel (Low / Medium / High; remembered per browser). High is the default: planar water reflections, MSAA, bloom, a sky-baked environment map, 4096 px shadows. Append `?q=low` for a low-quality mode (none of those, reduced resolution) on weak GPUs.
+Open the printed URL. Quality can be switched in-game from the action wheel (Low / Medium / High; remembered per browser). Medium is the default: direct antialiased rendering, 1024 px nearby shadows and simplified water shading, without HDR post-processing. High adds planar water reflections, subtle bloom, a sky-baked environment map and 2048 px shadows. Low removes shadows and further simplifies water. Append `?q=medium` or `?q=low` to override an older saved quality setting. Each quality switch resets resolution to full; automatic scaling stops at 80% to preserve readability. The FPS counter measures uncapped elapsed frame time.
 
 ## Controls
 
@@ -26,7 +26,7 @@ Open the printed URL. Quality can be switched in-game from the action wheel (Low
 
 | Key | Action |
 | --- | --- |
-| W / S | Throttle lever up / down (below zero = astern). Space = all stop |
+| W / S | Throttle lever up / down (below zero = astern). Space idles the engine and furls sails; the boat coasts |
 | A / D | Rudder |
 | R | Raise / furl sails |
 | J | Journal |
@@ -40,6 +40,7 @@ Open the printed URL. Quality can be switched in-game from the action wheel (Low
 | L | Searchlight (if fitted) |
 | Mouse | Left-drag to orbit, wheel to zoom, right-click for the action wheel |
 | T | Time warp ×1 / ×6 / ×30 · P pause · H help |
+| U | Hide / show the HUD for a clear view (also available as an on-screen button) |
 | K / O | Save / load. Autosaves every 90 s to this browser's local storage; the title screen offers Continue |
 | [ / ] | Debug: lower / raise the flood 5 m |
 

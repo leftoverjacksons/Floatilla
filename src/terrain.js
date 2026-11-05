@@ -78,9 +78,9 @@ export class FloorMap {
 }
 
 export function buildTerrain(scene, uniforms, city) {
-  // 4x4 tiles of 64 segments (~15.6 m spacing) so off-screen tiles are culled in every pass.
+  // 4x4 tiles of 32 segments (~31 m spacing); buildings supply the close-up detail.
   // Normals come from the height function itself, so tile edges shade seamlessly.
-  const TILES = 4, seg = 64, tileSize = WORLD_RECT.size / TILES;
+  const TILES = 4, seg = 32, tileSize = WORLD_RECT.size / TILES;
   const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0 });
   patchFloodMaterial(mat, uniforms, false);
   const c = new THREE.Color();
