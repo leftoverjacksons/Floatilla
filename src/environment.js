@@ -134,9 +134,9 @@ export class Environment {
     this.rainMat = new THREE.ShaderMaterial({
       uniforms: { uTime: { value: 0 }, uCam: { value: new THREE.Vector3() }, uWind: { value: new THREE.Vector2() },
         uColor: { value: new THREE.Color() }, uOpacity: { value: 0 }, uFlash: { value: 0 },
-        tDepth: { value: null }, uRes: { value: new THREE.Vector2(1, 1) }, uUseDepth: { value: 0 } },
+        tDepth: { value: null }, uRes: { value: new THREE.Vector2(1, 1) }, uUseDepth: { value: 0 }, uPix: { value: 0.001 } },
       vertexShader: RAIN_VERT, fragmentShader: RAIN_FRAG,
-      transparent: true, depthWrite: false, blending: THREE.NormalBlending,
+      transparent: true, depthWrite: false, blending: THREE.NormalBlending, side: THREE.DoubleSide,
     });
     this.rain = new THREE.Mesh(rg, this.rainMat); this.rain.frustumCulled = false; this.rain.renderOrder = 3; scene.add(this.rain);
     this.rainTime = 0;
@@ -268,6 +268,7 @@ export class Environment {
     cu.uDark.value.copy(this.horizon).multiplyScalar(0.55);
     this.clouds.position.set(cp.x, 650, cp.z);
 
+    this.camFov = camera.fov;
     this.updateRain(dt, cp);
     this.lightLevel = light;
   }
@@ -279,6 +280,9 @@ export class Environment {
     const u = this.rainMat.uniforms;
     this.rainTime = (this.rainTime + dt) % 1000;
     u.uTime.value = this.rainTime; u.uCam.value.copy(cp);
+    // world size of one pixel at 1 m: keeps streaks at least a pixel or two wide at any resolution
+    const hPx = this.renderer.getDrawingBufferSize(this._px || (this._px = new THREE.Vector2())).y;
+    u.uPix.value = 2 * Math.tan((this.camFov || 60) * Math.PI / 360) / Math.max(1, hPx);
     u.uWind.value.set(Math.cos(this.windAngle), Math.sin(this.windAngle)).multiplyScalar(this.windSpeed * 0.8);
     u.uColor.value.copy(this.fogColor).lerp(new THREE.Color(1, 1, 1), 0.35).multiplyScalar(0.9 + this.flash * 3);
     u.uOpacity.value = 0.45 + r * 0.3;
@@ -345,7 +349,7 @@ void sceneOcclude(){
 // camera, falling at ~9 m/s and drifting with the wind; a thin camera-facing quad stretched along its motion.
 const RAIN_VERT = /* glsl */`
 attribute vec4 aSeed;
-uniform float uTime; uniform vec3 uCam; uniform vec2 uWind;
+uniform float uTime; uniform vec3 uCam; uniform vec2 uWind; uniform float uPix;
 varying float vAlong; varying float vAcross; varying float vFade;
 void main(){
   const float B = 35.0, H = 34.0, FALL = 9.0;
@@ -359,11 +363,12 @@ void main(){
   vec3 toCam = normalize(cameraPosition - p);
   vec3 side = normalize(cross(dir, toCam));
   float dist = length(cameraPosition - p);
-  float w = max(0.006, dist * 0.0009);            // never thinner than ~1 pixel
+  // at least 1.5 pixels wide (thinner quads miss pixel centres and vanish); opacity keeps the brightness
+  float w = max(0.004, dist * uPix * 1.5);
   float len = (0.55 + aSeed.w * 0.5) * (0.6 + 0.4 * smoothstep(2.0, 12.0, dist));
   vec3 wp = p + side * position.x * w - dir * position.y * len;
   vAlong = position.y; vAcross = position.x;
-  vFade = (0.006 / w) * smoothstep(0.8, 3.0, dist) * (1.0 - smoothstep(B * 0.7, B, length(p.xz - uCam.xz)));
+  vFade = clamp(0.004 / w * 5.0, 0.12, 1.0) * smoothstep(0.8, 3.0, dist) * (1.0 - smoothstep(B * 0.7, B, length(p.xz - uCam.xz)));
   gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
 }`;
 const RAIN_FRAG = /* glsl */`
@@ -372,7 +377,7 @@ varying float vAlong; varying float vAcross; varying float vFade;
 ${DEPTH_TEST}
 void main(){
   sceneOcclude();
-  float a = (1.0 - abs(vAcross)) * sin(vAlong * 3.14159) * uOpacity * min(1.0, vFade * 3.0);
+  float a = (1.0 - abs(vAcross) * 0.6) * sin(vAlong * 3.14159) * uOpacity * vFade;
   if (a < 0.003) discard;
   gl_FragColor = vec4(uColor, a);
   #include <tonemapping_fragment>
