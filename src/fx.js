@@ -33,7 +33,7 @@ export class Fx {
     // Surface foam (wakes, bow waves) as flat patches lying on the water.
     this.dMax = 1800; this.dHead = 0;
     this.d = { x: new Float32Array(this.dMax), y: new Float32Array(this.dMax), z: new Float32Array(this.dMax), vx: new Float32Array(this.dMax), vz: new Float32Array(this.dMax),
-      life: new Float32Array(this.dMax), max: new Float32Array(this.dMax), size: new Float32Array(this.dMax), rot: new Float32Array(this.dMax) };
+      life: new Float32Array(this.dMax), max: new Float32Array(this.dMax), size: new Float32Array(this.dMax), rot: new Float32Array(this.dMax), fixed: new Uint8Array(this.dMax) };
     const pg = new THREE.PlaneGeometry(1, 1); pg.rotateX(-Math.PI / 2);
     this.dAlpha = new THREE.InstancedBufferAttribute(new Float32Array(this.dMax), 1);
     this.dSeed = new THREE.InstancedBufferAttribute(new Float32Array(this.dMax).map(() => Math.random() * 100), 1);
@@ -67,10 +67,11 @@ export class Fx {
     scene.add(this.decals);
     this._m = new THREE.Matrix4(); this._q = new THREE.Quaternion(); this._p = new THREE.Vector3(); this._s = new THREE.Vector3(); this._up = new THREE.Vector3(0, 1, 0);
   }
-  emitFoam(x, y, z, vx, vz, life, size) {
+  /** Foam patch; `fixed` keeps it at height y (on a deck) instead of riding the waves. */
+  emitFoam(x, y, z, vx, vz, life, size, fixed = false) {
     const i = this.dHead; this.dHead = (this.dHead + 1) % this.dMax;
     const d = this.d;
-    d.x[i] = x; d.y[i] = y; d.z[i] = z; d.vx[i] = vx; d.vz[i] = vz; d.life[i] = life; d.max[i] = life; d.size[i] = size; d.rot[i] = Math.random() * 6.28;
+    d.x[i] = x; d.y[i] = y; d.z[i] = z; d.vx[i] = vx; d.vz[i] = vz; d.life[i] = life; d.max[i] = life; d.size[i] = size; d.rot[i] = Math.random() * 6.28; d.fixed[i] = fixed ? 1 : 0;
   }
   emit(x, y, z, vx, vy, vz, life, size, kind = 0, r = 0.92, gr = 0.95, b = 0.95) {
     if (kind === 0) return this.emitFoam(x, y, z, vx, vz, life * 1.6, size * 1.3);
@@ -107,7 +108,7 @@ export class Fx {
       d.life[i] -= dt;
       const t = 1 - d.life[i] / d.max[i];
       d.x[i] += d.vx[i] * dt; d.z[i] += d.vz[i] * dt; d.vx[i] *= 0.985; d.vz[i] *= 0.985;
-      if (((i + this._tick) & 3) === 0) d.y[i] = water.heightFast(d.x[i], d.z[i]) + 0.04;
+      if (!d.fixed[i] && ((i + this._tick) & 3) === 0) d.y[i] = water.heightFast(d.x[i], d.z[i]) + 0.04;
       const sc = d.size[i] * (0.5 + t * 1.6);
       this._p.set(d.x[i], d.y[i], d.z[i]); this._q.setFromAxisAngle(this._up, d.rot[i] + t * 0.3); this._s.set(sc, 1, sc);
       m.compose(this._p, this._q, this._s); this.decals.setMatrixAt(i, m);

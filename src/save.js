@@ -1,6 +1,7 @@
 import { Boat } from './boat.js';
 import { Person, Animal } from './people.js';
 import { findSpot, waterInfo, groundHeight } from './terrain.js';
+import { floodDaysFor } from './environment.js';
 
 // Save format is plain JSON in localStorage. Transient world entities (floating
 // supplies, rooftop survivors, derelicts, raiders) are not stored; they are
@@ -21,7 +22,7 @@ export function serialize(game) {
   return {
     v: 1, savedAt: Date.now(),
     env: { hours: env.hours, day: env.day, elapsedDays: env.elapsedDays, state: env.state, stateTimer: env.stateTimer,
-      cur: { ...env.cur }, windAngle: env.windAngle, levelOffset: env.levelOffset },
+      cur: { ...env.cur }, windAngle: env.windAngle, levelOffset: env.levelOffset, floodDays: env.floodDays, floodPace: env.floodPace },
     fleet: { inv: { ...fleet.inv }, morale: fleet.morale, stats: { ...fleet.stats }, mode: fleet.mode, detached: fleet.detached,
       playerIndex: fleet.boats.indexOf(fleet.player) },
     landmarks: game.landmarks ? game.landmarks.serialize() : null,
@@ -43,7 +44,10 @@ export function writeSave(game) {
 export function restore(game, data) {
   const { env, fleet, world, scene, rng } = game;
   Object.assign(env, { hours: data.env.hours, day: data.env.day, elapsedDays: data.env.elapsedDays, state: data.env.state,
-    stateTimer: data.env.stateTimer, windAngle: data.env.windAngle, levelOffset: data.env.levelOffset });
+    stateTimer: data.env.stateTimer, windAngle: data.env.windAngle, levelOffset: data.env.levelOffset || 0 });
+  // saves from before the adjustable flood: carry the old water level over onto the new curve
+  if (data.env.floodDays !== undefined) { env.floodDays = data.env.floodDays; env.floodPace = data.env.floodPace ?? 1; }
+  else { const t = Math.min(1, data.env.elapsedDays / 60); env.floodDays = floodDaysFor(4 + 71 * (0.15 * t + 0.85 * t * t * (3 - 2 * t))); env.floodPace = 1; }
   Object.assign(env.cur, data.env.cur);
   Object.assign(fleet.inv, data.fleet.inv);
   Object.assign(fleet.stats, data.fleet.stats);

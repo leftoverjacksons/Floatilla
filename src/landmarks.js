@@ -3,7 +3,6 @@ import { groundHeight, groundSlope, waterInfo, findSpot } from './terrain.js';
 import { patchFloodMaterial } from './shaders.js';
 import { buildHullGeometry } from './boat.js';
 import { rectDistance } from './city.js';
-import { floodLevel } from './environment.js';
 import { mulberry32, pick, rand } from './util.js';
 
 // Plots the procedural city must leave empty.
@@ -14,7 +13,7 @@ export const SITES = {
   ship: (() => { const p = findSpot(120, 820, -40, -9, 300, (x, z) => waterInfo(x, z).kind === 'channel' && waterInfo(x, z).d < -60); return { x: p.x, z: p.z }; })(),
   // a pier on the bay's north shore, east of the river mouth
   funfair: findSpot(380, -130, -5, 0.5, 450, (x, z) => { const w = waterInfo(x, z); return w.kind !== 'river' && w.d > -30 && w.d < -8; }),
-  // old town, low enough that boats reach its door from the start (ground ≤ ~2.8 m, flood 4 m)
+  // old town by the harbour: the water reaches its door within the first days
   church: findSpot(-520, -420, 1.4, 2.7, 500, (x, z) => groundSlope(x, z) < 0.08 && flatAround(18, 1.2)(x, z)),
   // flat ground that floods mid-game
   stadium: findSpot(-60, -640, 6.0, 8.0, 900, (x, z) => { let lo = 99; for (const [dx, dz] of [[0, 0], [60, 0], [-60, 0], [0, 60], [0, -60], [42, 42], [-42, 42], [42, -42], [-42, -42]]) lo = Math.min(lo, groundHeight(x + dx, z + dz)); return lo > 5.6; }),
@@ -221,8 +220,8 @@ export class Landmarks {
     this.box(g, 0xd8b040, 1.6, 0.3, 0.3, cx, towerTop + 22, (tz0 + tz1) / 2, { metalness: 0.8, roughness: 0.3 });
     this.box(g, 0x4a2a1a, 3, 4.5, 0.3, cx, gr + 2.25, tz1 + 0.1);
     this.add({ id: 'church', name: "St. Brendan's Church", x: cx, z: cz, range: 1300,
-      reach: { minx: cx - 9, maxx: cx + 9, minz: cz - 19, maxz: tz1 + 1 }, reachLevel: null,
-      blurb: 'a church spire over the drowned harbour district.',
+      reach: { minx: cx - 9, maxx: cx + 9, minz: cz - 19, maxz: tz1 + 1 }, reachLevel: gr + 1.6,
+      blurb: 'a church spire over the old harbour district.',
       loot: { food: 8, water: 10, wood: 6 },
       action: { label: '[E] Ring the bell', desc: 'Once a day: survivors within earshot show themselves.' } });
   }
@@ -307,9 +306,7 @@ export class Landmarks {
   // ---- runtime ------------------------------------------------------------------
   /** Day on which the flood first reaches `lvl` (ignoring tides), for the journal. */
   dayForLevel(lvl) {
-    const env = this.game.env; const off = env.levelOffset;
-    for (let d = 0; d < 400; d += 0.25) if (floodLevel(d) + off >= lvl) return Math.floor(d) + 1;
-    return null;
+    return this.game.env.dayForLevel(lvl);
   }
   reachable(lm) { return lm.reachLevel == null || this.game.env.level >= lm.reachLevel; }
 

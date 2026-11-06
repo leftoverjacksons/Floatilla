@@ -20,12 +20,23 @@ const NEXT = {
   storm: [['rain', 3], ['cloudy', 1]],
 };
 
-/** Flood curve: metres above the starting sea level after `days` game days. */
-export function floodLevel(days) {
-  // Starts with the low harbor district already under ~4 m, then creeps up over ~two months.
-  const t = clamp(days / 60, 0, 1);
-  return 4 + 71 * (0.15 * t + 0.85 * t * t * (3 - 2 * t));
+/**
+ * Flood curve: water level (m above the old sea level) after `fd` flood-days. The town starts dry
+ * (quays and pier decks ~2 m above the water), the first metre or so comes in over a day and a half
+ * so waves start breaking over the waterfront, then the rise accelerates toward the rooftops.
+ * Flood-days advance with game time × the flood pace, which is adjustable in game.
+ */
+export const FLOOD_START = 0.3;
+export function floodLevel(fd) {
+  fd = Math.max(0, fd);
+  return Math.min(80, FLOOD_START + 0.8 * fd + 0.04 * fd * fd);
 }
+/** Inverse of floodLevel (flood-days at which the water first reaches `lvl`). */
+export function floodDaysFor(lvl) {
+  const c = FLOOD_START - Math.min(lvl, 80);
+  return c >= 0 ? 0 : (-0.8 + Math.sqrt(0.64 - 0.16 * c)) / 0.08;
+}
+export const FLOOD_PACES = [[0, 'Paused'], [0.5, 'Slow'], [1, 'Normal'], [2, 'Fast'], [4, 'Rapid']];
 
 export class Environment {
   constructor(scene, renderer, rng) {
@@ -33,6 +44,7 @@ export class Environment {
     this.hours = 7.0; this.day = 1; this.elapsedDays = 0; // game time since start
     this.timeScale = 1;
     this.levelOffset = 0;
+    this.floodDays = 0; this.floodPace = 1;
     this.state = 'clear';
     this.stateTimer = 5;
     this.cur = { ...WEATHER.clear };
@@ -162,7 +174,15 @@ export class Environment {
   get windVec() { return new THREE.Vector2(Math.cos(this.windAngle), Math.sin(this.windAngle)).multiplyScalar(this.windSpeed); }
   get night() { return 1 - smoothstep(-0.12, 0.12, this.sunDir.y); }
   get dayFactor() { return smoothstep(-0.05, 0.3, this.sunDir.y); }
-  get floodRate() { return (floodLevel(this.elapsedDays + 1 / 24) - floodLevel(this.elapsedDays)); } // m per game hour
+  get floodRate() { return floodLevel(this.floodDays + this.floodPace / 24) - floodLevel(this.floodDays); } // m per game hour
+  get paceLabel() { return (FLOOD_PACES.find(([v]) => v === this.floodPace) || [0, `×${this.floodPace}`])[1]; }
+  /** Game day on which the water (ignoring tides) first reaches `lvl`; null if the flood is paused short of it. */
+  dayForLevel(lvl) {
+    const fd = floodDaysFor(lvl - this.levelOffset);
+    if (fd <= this.floodDays) return Math.floor(this.elapsedDays) + 1;
+    if (this.floodPace <= 0) return null;
+    return Math.floor(this.elapsedDays + (fd - this.floodDays) / this.floodPace) + 1;
+  }
 
   pickNext() {
     const opts = NEXT[this.state].map(([s, w]) => [s, s === 'storm' ? w * (1 + this.elapsedDays * 0.25) : w]);
@@ -174,7 +194,7 @@ export class Environment {
 
   update(dt, focus, camera) {
     const gameHours = dt * this.timeScale * 24 / DAY_SECONDS;
-    this.hours += gameHours; this.elapsedDays += gameHours / 24;
+    this.hours += gameHours; this.elapsedDays += gameHours / 24; this.floodDays += gameHours / 24 * this.floodPace;
     if (this.hours >= 24) { this.hours -= 24; this.day++; }
 
     // Weather state machine (durations in game hours).
@@ -191,7 +211,9 @@ export class Environment {
 
     // Flood + tide (+ storm surge).
     const tide = 0.6 * Math.sin(t / 12.42 * Math.PI * 2);
-    this.level = floodLevel(this.elapsedDays) + tide + this.cur.rain * 0.4 + this.levelOffset;
+    // storm surge: rain raises the bay a little, a full storm pushes in most of a metre
+    const surge = this.cur.rain * 0.3 + Math.max(0, this.cur.wind - 10) * 0.06;
+    this.level = floodLevel(this.floodDays) + tide + surge + this.levelOffset;
 
     // Sun & moon.
     const a = (this.hours - 6) / 24 * Math.PI * 2;

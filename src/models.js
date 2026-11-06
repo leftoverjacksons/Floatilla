@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { registerTownKit } from './townkit.js';
 
 // Authored models (built in Blender, see tools/blender). Each GLB carries a
 // "floatilla" JSON blob in its root node's extras with gameplay data in game
@@ -11,7 +12,10 @@ export async function loadModels() {
   const loader = new GLTFLoader();
   const base = import.meta.env.BASE_URL;
   const kinds = ['sloop', 'raft', 'rowboat', 'skiff', 'raider', 'fishing', 'tug', 'yacht', 'houseboat', 'barge', 'schooner'];
-  await Promise.all(kinds.map(async (kind) => {
+  await Promise.all([(async () => {
+    try { registerTownKit(await loader.loadAsync(`${base}models/town.glb`)); }
+    catch (e) { console.warn('Town kit unavailable, using box buildings:', e && e.message); }
+  })(), ...kinds.map(async (kind) => {
     try {
       const gltf = await loader.loadAsync(`${base}models/${kind}.glb`);
       let root = null;
@@ -27,7 +31,7 @@ export async function loadModels() {
     } catch (e) {
       console.warn(`Model "${kind}" unavailable, using the procedural boat:`, e && e.message);
     }
-  }));
+  })]);
 }
 
 /** Boat design kind → model key. */

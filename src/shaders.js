@@ -8,7 +8,7 @@ float fvnoise(vec2 p){ vec2 i = floor(p), f = fract(p); vec2 u = f * f * (3.0 - 
   return mix(mix(fhash12(i), fhash12(i + vec2(1.0, 0.0)), u.x), mix(fhash12(i + vec2(0.0, 1.0)), fhash12(i + vec2(1.0, 1.0)), u.x), u.y); }
 `;
 
-export function patchFloodMaterial(mat, uniforms, windows) {
+export function patchFloodMaterial(mat, uniforms, windows, extra = null, extraKey = '') {
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uLevel = uniforms.uLevel;
     shader.uniforms.uNight = uniforms.uNight;
@@ -83,7 +83,8 @@ roughnessFactor = mix(roughnessFactor, 0.06, fWin);`)
 metalnessFactor = mix(metalnessFactor, 0.55, fWin);`)
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
 totalEmissiveRadiance += vec3(1.0, 0.72, 0.4) * fLit * smoothstep(0.3, 0.9, uNight) * 1.3;`);
+    if (extra) extra(shader); // inserts right after the same includes, i.e. ahead of the flood code
   };
-  mat.customProgramCacheKey = () => (windows ? 'flood-win' : 'flood');
+  mat.customProgramCacheKey = () => (windows ? 'flood-win' : 'flood') + extraKey;
   if (windows) mat.defines = { ...(mat.defines || {}), FLOOD_WINDOWS: '' };
 }

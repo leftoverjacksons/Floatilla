@@ -4,6 +4,8 @@ import { Boat, randomDesign, KINDS } from './boat.js';
 import { Person, Animal, ANIMALS } from './people.js';
 import { steerBoat } from './fleet.js';
 import { rectDistance } from './city.js';
+import { DOWNTOWN } from './terrain.js';
+import { angleDiff } from './util.js';
 
 const PICKUPS = {
   planks: { label: 'Planks', w: 5, give: (r) => ({ wood: randInt(r, 1, 3) }) },
@@ -16,7 +18,7 @@ const PICKUPS = {
   log: { label: 'Driftwood', w: 3, give: (r) => ({ wood: randInt(r, 2, 4) }) },
 };
 const PICKUP_KEYS = Object.keys(PICKUPS);
-const ROOF_KINDS = new Set(['house', 'building', 'tower', 'pier', 'containers', 'warehouse']);
+const ROOF_KINDS = new Set(['house', 'building', 'tower', 'pier', 'quay', 'containers', 'warehouse']);
 
 const BOX = new THREE.BoxGeometry(1, 1, 1);
 const CYL = new THREE.CylinderGeometry(1, 1, 1, 10);
@@ -167,6 +169,64 @@ export class World {
     return 'rowboat';
   }
 
+  /**
+   * Boats left behind in the harbour: tied up alongside the piers and swinging at anchor off the town.
+   * They stay put until the flood or a storm tears them loose; then they drift and can be claimed.
+   */
+  populateHarbour() {
+    const c = this.ctx.city, rng = this.rng, level = this.ctx.water.level;
+    const deep = (x, z, b) => level - this.ctx.floorMap.floorAt(x, z) > b.design.draft + 0.4 && !c.pointInBuilding(x, z, b.B * 0.5 + 0.3);
+    const PIER_KINDS = ['sailboat', 'sailboat', 'fishing', 'yacht', 'rowboat', 'skiff', 'houseboat', 'fishing'];
+    for (const p of c.colliders) {
+      if (p.kind !== 'pier') continue;
+      for (const side of [1, -1]) {
+        if (rng() > 0.35) continue;
+        const b = this.spawnBoat(pick(rng, PIER_KINDS), p.cx, p.cz, 'moored', { hpFrac: rand(rng, 0.5, 0.9) });
+        // along the pier (local z toward the sea end), off one side
+        const s = rand(rng, -0.05, 0.3) * p.hz * 2, off = p.hx + b.B / 2 + 0.7;
+        const x = p.cx + p.sin * s + p.cos * side * off, z = p.cz + p.cos * s - p.sin * side * off;
+        if (!deep(x, z, b)) { this.removeBoat(b); continue; }
+        const h = Math.atan2(p.sin, p.cos) + (rng() < 0.5 ? 0 : Math.PI);
+        b.x = x; b.z = z; b.heading = h; b.mooring = { x, z, h, pier: p };
+      }
+    }
+    // at anchor off the waterfront
+    const ANCHOR_KINDS = ['sailboat', 'sailboat', 'yacht', 'fishing', 'schooner', 'houseboat', 'tug', 'barge'];
+    let placed = 0;
+    for (let i = 0; i < 300 && placed < 8; i++) {
+      const a = rng() * Math.PI * 2, r = rand(rng, 120, 900);
+      const x = DOWNTOWN.x + Math.cos(a) * r * 1.2, z = DOWNTOWN.z + 420 + Math.sin(a) * r * 0.6;
+      if (this.boats.some((o) => Math.hypot(o.x - x, o.z - z) < 40)) continue;
+      const kind = pick(rng, ANCHOR_KINDS), K = KINDS[kind];
+      if (!this.openWater(x, z, K.draft[1] + 1.5, K.L[1] * 0.6 + 4)) continue;
+      const b = this.spawnBoat(kind, x, z, 'moored', { hpFrac: rand(rng, 0.4, 0.85) });
+      b.mooring = { x, z, h: b.heading, pier: null };
+      placed++;
+    }
+  }
+
+  /** Hold a moored boat in place; let it go when the water tops its pier or a storm drags the anchor. */
+  moorAI(b, dt, ctx) {
+    const m = b.mooring, env = ctx.env;
+    b.throttle = 0; b.rudder = 0; b.anchored = true;
+    let loose = false;
+    if (m.pier && ctx.water.level > m.pier.top + 0.35) loose = true;
+    if (!m.pier && env.cur.wind > 15 && this.rng() < dt / 900) loose = true;
+    if (loose) {
+      b.role = 'derelict'; b.mooring = null; b.anchored = false;
+      const pl = this.game.fleet.player;
+      if (pl && Math.hypot(b.x - pl.x, b.z - pl.z) < 700) this.game.ui.toast(`A ${b.design.label.toLowerCase()} has torn free of its ${m.pier ? 'mooring' : 'anchor'} and is drifting.`, 'info');
+      return;
+    }
+    // anchored boats swing bow-to-wind; pier boats lie along the pier
+    const h = m.pier ? m.h : Math.atan2(-ctx.wind.x, -ctx.wind.y);
+    const k = Math.min(1, dt * 0.6);
+    b.heading += angleDiff(h, b.heading) * k * (m.pier ? 1 : 0.3);
+    const sway = m.pier ? 0.15 : 6; // anchor rode lets it wander a little
+    const tx = m.x + (m.pier ? 0 : -Math.sin(h) * sway), tz = m.z + (m.pier ? 0 : -Math.cos(h) * sway);
+    b.x += (tx - b.x) * k; b.z += (tz - b.z) * k; b.vx *= 0.9; b.vz *= 0.9;
+  }
+
   // ---------------- per-frame ----------------
   update(dt, ctx) {
     const fleet = this.game.fleet, pl = fleet.player;
@@ -246,6 +306,13 @@ export class World {
     for (let i = this.boats.length - 1; i >= 0; i--) {
       const b = this.boats[i];
       if (b.fleet) continue;
+      if (b.role === 'moored') {
+        // far-off moored boats just sit (and are not drawn beyond 350 m); nearby ones bob and swing
+        const dm = Math.hypot(b.x - pl.x, b.z - pl.z);
+        b.root.visible = dm < 350;
+        if (dm > 450 && b.settled) continue;
+        b.update(dt, ctx); this.moorAI(b, dt, ctx); continue;
+      }
       if (b.role === 'npc') this.npcAI(b, dt, ctx);
       else if (b.role === 'raider') this.raiderAI(b, dt, ctx);
       else { b.throttle = 0; b.rudder = 0; }
@@ -297,6 +364,8 @@ export class World {
         if (c.used || !ROOF_KINDS.has(c.kind)) return;
         const t = c.roof.top;
         if (t < level + 0.6 || t > level + 12) return;
+        // only where the water has actually reached: flooded buildings, or the waterfront itself
+        if (c.base !== undefined && c.base > level + 0.4) return;
         const d = rectDistance(c.roof, pl.x, pl.z);
         if (d < 220 || d > 1000) return;
         cands.push(c);
@@ -320,12 +389,13 @@ export class World {
     for (const b of [...this.boats]) {
       if (b.fleet) continue;
       const d = Math.hypot(b.x - pl.x, b.z - pl.z);
+      if (b.role === 'moored') continue;
       if (d > 1500 || (b.role === 'raider' && b.ai.fleeing && d > 600)) this.removeBoat(b);
     }
     const free = this.boats.filter((b) => !b.fleet);
     const days = env.elapsedDays;
-    if (free.filter((b) => b.role === 'derelict').length < 1 && this.derelictTimer <= 0) {
-      this.derelictTimer = rand(this.rng, 8, 18);
+    if (free.filter((b) => b.role === 'derelict').length < 2 && this.derelictTimer <= 0) {
+      this.derelictTimer = rand(this.rng, 6, 14);
       const kind = this.randomDerelictKind(days);
       const K = KINDS[kind];
       const pt = this.randomWaterPoint(pl.x, pl.z, 400, 900, K.draft[1] + 1.5, K.L[1] * 0.6 + 2, 8);
@@ -337,8 +407,9 @@ export class World {
         b.anchored = false;
       }
     }
-    if (days > 2 && free.filter((b) => b.role === 'npc').length < 1 && this.npcTimer <= 0) {
-      this.npcTimer = rand(this.rng, 18, 40);
+    // other survivors on the move: most are passing through, a few might throw in with you
+    if (free.filter((b) => b.role === 'npc').length < 3 && this.npcTimer <= 0) {
+      this.npcTimer = rand(this.rng, 3, 9);
       const kind = pick(this.rng, ['rowboat', 'skiff', 'sailboat', 'fishing', 'houseboat', 'raft']);
       const pt = this.randomWaterPoint(pl.x, pl.z, 350, 700, KINDS[kind].draft[1] + 1.5, KINDS[kind].L[1] * 0.6 + 2, 6);
       if (pt) {
@@ -347,6 +418,7 @@ export class World {
         for (let i = 0; i < n; i++) b.addPerson(new Person(this.rng));
         if (this.rng() < 0.35) b.addAnimal(new Animal(this.rng, pick(this.rng, Object.keys(ANIMALS))));
         b.ai.wanderTimer = 0;
+        b.ai.joinable = this.rng() < 0.25;
       }
     }
     // raiders
@@ -376,8 +448,8 @@ export class World {
     }
     b.ai.wanderTimer -= dt;
     if (!b.ai.target || b.ai.wanderTimer <= 0 || Math.hypot(b.ai.target.x - b.x, b.ai.target.z - b.z) < 15) {
-      b.ai.target = this.randomWaterPoint(b.x, b.z, 80, 250, b.design.draft + 1, 3, 8) || { x: b.x, z: b.z };
-      b.ai.wanderTimer = 60;
+      b.ai.target = this.randomWaterPoint(b.x, b.z, 200, 650, b.design.draft + 1, 3, 10) || this.randomWaterPoint(b.x, b.z, 60, 200, b.design.draft + 1, 3, 8) || { x: b.x, z: b.z };
+      b.ai.wanderTimer = 150;
     }
     steerBoat(b, b.ai.target.x, b.ai.target.z, 2.2, ctx, dt, { fuelReserve: 0, preferSail: b.rigs.length > 0 });
   }
@@ -515,6 +587,16 @@ export class World {
       fleet.add(b); fleet.stats.boatsJoined++;
       ui.toast(`${donor.name} takes the helm of the ${b.name} (${b.design.label}). Your floatilla grows to ${fleet.boats.length}.`, 'good');
       this.game.audio.chime();
+    } else if (it.kind === 'hail' && it.target.ai && it.target.ai.joinable === false) {
+      const b = it.target;
+      const LINES = ['"We\'re making for the hills — good luck out here!"', '"Seen people waving from the roofs east of the river."', '"The radio says the water won\'t stop till it\'s over the towers."', '"Watch yourselves at night. There are boats out here taking what they want."', '"Fuel\'s the thing. Find a marina before it\'s under."'];
+      if (!b.ai.gifted) {
+        b.ai.gifted = true;
+        const res = pick(this.rng, ['food', 'water', 'fuel', 'cloth']), n = randInt(this.rng, 1, 3);
+        const got = fleet.give(res, n);
+        ui.toast(`${pick(this.rng, LINES)} They pass across ${got} ${res}.`, 'good');
+      } else ui.toast(pick(this.rng, LINES), 'info');
+      this.game.audio.blip(520);
     } else if (it.kind === 'hail') {
       const b = it.target;
       const ask = b.crew.length * 4;

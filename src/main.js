@@ -9,7 +9,7 @@ import { mulberry32, clamp, pick } from './util.js';
 import { FloorMap, buildTerrain } from './terrain.js';
 import { City } from './city.js';
 import { Water } from './water.js';
-import { Environment, DAY_SECONDS } from './environment.js';
+import { Environment, DAY_SECONDS, FLOOD_PACES } from './environment.js';
 import { Boat, randomDesign, KINDS } from './boat.js';
 import { Person, Animal } from './people.js';
 import { Fleet, RECIPES, recipeCost } from './fleet.js';
@@ -20,6 +20,7 @@ import { Audio } from './audio.js';
 import { Fx } from './fx.js';
 import { WakeSim } from './wake.js';
 import { AtmospherePass } from './atmosphere.js';
+import { Overtopping } from './waterfront.js';
 import { RadialMenu } from './radial.js';
 import { loadModels } from './models.js';
 import { Landmarks, LANDMARK_RESERVED } from './landmarks.js';
@@ -90,6 +91,8 @@ class Game {
       onSlam: (b, e) => { if (b === this.fleet.player) { this.camCtl.shake = Math.max(this.camCtl.shake || 0, e * 0.25); if (this.audio.splash) this.audio.splash(e); } },
     };
 
+    this.world.populateHarbour();
+    this.overtopping = new Overtopping(this.city);
     const save = consumeLoadFlag() ? readSave() : null;
     this.loadedFromSave = false;
     if (save) {
@@ -263,13 +266,18 @@ class Game {
     this.water.level = level;
     const rb = findSpot(start.x + 90, start.z + 60, -30, -1.5, 300, (x, z) => waterInfo(x, z).d < -15);
     w.spawnBoat('rowboat', rb.x, rb.z, 'derelict', { hpFrac: 0.3, heading: 2.5 });
+    // someone waiting at the end of a pier for a boat out
     let best = null, bd = Infinity;
     for (const c of this.city.colliders) {
-      if (!['house', 'building'].includes(c.kind) || c.roof.top < level + 1 || c.roof.top > level + 10) continue;
-      const d = Math.hypot((c.minx + c.maxx) / 2 - start.x, (c.minz + c.maxz) / 2 - start.z);
-      if (d > 120 && d < bd) { bd = d; best = c; }
+      if (c.kind !== 'pier' || !c.pierEnd) continue;
+      const d = Math.hypot(c.pierEnd.x - start.x, c.pierEnd.z - start.z);
+      if (d > 150 && d < bd) { bd = d; best = c; }
     }
-    if (best) w.spawnSurvivorGroup(best, { people: 1, animal: 'cat' });
+    if (best) {
+      const e = best.pierEnd;
+      best.roof = { minx: e.x - 2, maxx: e.x + 2, minz: e.z - 2, maxz: e.z + 2, top: best.top };
+      w.spawnSurvivorGroup(best, { people: 1, animal: 'cat' });
+    }
     for (let i = 0; i < 3; i++) { const pk = findSpot(start.x + (rng() - 0.5) * 120, start.z + 40 + rng() * 60, -30, -1, 120); w.spawnPickup(pk.x, pk.z); }
   }
 
@@ -288,7 +296,7 @@ class Game {
       title.style.display = 'none'; this.started = true; this.audio.init();
       if (this.loadedFromSave) this.ui.toast(`Voyage resumed: ${this.env.timeString()}, flood at ${this.env.level.toFixed(1)} m.`, 'good');
       else {
-        this.ui.toast('Day 1. Just you, the dog and a tired old sloop. The harbor is already under water. Find people. Mend the boat.', 'info');
+        this.ui.toast('Day 1. Just you, the dog and a tired old sloop. The sea is rising: by tomorrow it will be over the quays. Find people. Mend the boat.', 'info');
         this.ui.toast('W/S throttle, A/D steer. Right-click anywhere for the action wheel: sails, interact, workshop, fleet, save.', 'info');
       }
     };
@@ -332,8 +340,8 @@ class Game {
         case 'j': A.journal(); break;
         case 'v': A.walk(); break;
         case 'o': A.load(); break;
-        case ']': this.env.levelOffset += 5; this.ui.toast('[debug] Flood +5 m'); break;
-        case '[': this.env.levelOffset -= 5; this.ui.toast('[debug] Flood −5 m'); break;
+        case ']': this.env.levelOffset += 1; this.ui.toast('[debug] Water +1 m'); break;
+        case '[': this.env.levelOffset -= 1; this.ui.toast('[debug] Water −1 m'); break;
       }
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.key.toLowerCase()));
@@ -384,6 +392,8 @@ class Game {
       { icon: '🧭', label: f.detached ? 'Regroup' : 'Go alone', key: 'F', disabled: !many, why: 'You have no other boats yet.', desc: f.detached ? 'Call the floatilla to your position.' : 'Leave the floatilla anchored and scout ahead.', run: A.detach },
       { icon: '⇄', label: 'Switch boat', key: 'Tab', disabled: !many, why: 'You have no other boats yet.', desc: 'Take the helm of the next boat; it becomes the lead.', run: () => A.switchBoat(1) },
       { icon: '🔦', label: pl.lightOn ? 'Light off' : 'Searchlight', key: 'L', disabled: !pl.count('light'), why: 'No searchlight fitted. Build one in the Workshop.', desc: 'Lights the way at night and deters raiders.', run: A.light },
+      { icon: '🌊', label: `Flood: ${this.env.paceLabel}`, desc: `How fast the water rises. Next: ${FLOOD_PACES[(FLOOD_PACES.findIndex(([v]) => v === this.env.floodPace) + 1) % FLOOD_PACES.length][1]}. Now ${(this.env.floodRate * 100).toFixed(0)} cm per game hour (a game hour is 50 s).`,
+        run: () => { const i = (FLOOD_PACES.findIndex(([v]) => v === this.env.floodPace) + 1) % FLOOD_PACES.length; this.env.floodPace = FLOOD_PACES[i][0]; this.ui.toast(`Flood pace: ${FLOOD_PACES[i][1]}`); } },
       { icon: '⏩', label: `Time ×${this.env.timeScale === 1 ? 6 : this.env.timeScale === 6 ? 30 : 1}`, key: 'T', desc: `Currently ×${this.env.timeScale}.`, run: A.time },
       { icon: '🖥', label: `Quality: ${this.quality}`, desc: `Next: ${{ low: 'medium', medium: 'high', high: 'low' }[this.quality]}. High adds water reflections (the most expensive part); medium keeps glow, shadows and antialiasing; low is plain and fastest. Currently ${Math.round(this.fps)} fps.`, run: () => { const n = { low: 'medium', medium: 'high', high: 'low' }[this.quality]; this.applyQuality(n); this.ui.toast(`Quality: ${n}`); } },
       { icon: '💾', label: 'Save', key: 'K', desc: 'Save to this browser. Autosaves every 90 s.', run: A.save },
@@ -614,8 +624,10 @@ class Game {
     }
     // hulls press on the wake field around the focus
     if (this.wake.ok) {
-      for (const b of this.world.boats) {
-        if (b.sunk || !this.wake.covers(b.x, b.z, -20)) continue;
+      // nearest hulls first: the field takes 16
+      const near = this.world.boats.filter((b) => !b.sunk && this.wake.covers(b.x, b.z, -20))
+        .sort((a, b) => Math.hypot(a.x - focus.x, a.z - focus.z) - Math.hypot(b.x - focus.x, b.z - focus.z));
+      for (const b of near) {
         const d = b.design;
         this.wake.addBoat(b.x, b.z, b.heading, d.length * 0.5, d.beam * 0.5, Math.min(1.2, d.draft * 0.45 + 0.1), Math.hypot(b.vx, b.vz));
       }
@@ -633,8 +645,9 @@ class Game {
         this.fx.emit(x, this.water.heightFast(x, z) + 0.2, z, wx * s, 0.8 + Math.random() * 1.6, wz * s, 0.9 + Math.random() * 0.9, 0.3 + Math.random() * 0.5, 1);
       }
     }
+    this.overtopping.update(dt, this.ctx, this.camera.position, this.audio);
     this.fx.update(dt, this.water, 0.3 + 0.7 * (env.lightLevel ?? 1));
-    this.city.update(dt, env.night, performance.now() / 1000);
+    this.city.update(dt, env.night, performance.now() / 1000, this.camera.position);
 
     // searchlight follows the lead boat
     const pl = f.player;

@@ -3,6 +3,10 @@ import { mulberry32, rand, pick, randInt, clamp, fbm } from './util.js';
 import { groundHeight, groundSlope, waterInfo, RIVERS, DOWNTOWN, findSpot } from './terrain.js';
 import { patchFloodMaterial } from './shaders.js';
 import { tiled, LAYER_NO_REFLECT } from './tiles.js';
+import { KIT, KIT_OK, placeKit, updateKitLOD } from './townkit.js';
+
+// Waterfront heights: the town starts nearly dry, so decks sit ~2 m above the opening water level.
+export const PIER_TOP = 2.2, QUAY_TOP = 2.0;
 
 const TOWER_COLORS = [0x8a96a3, 0x6f7f8f, 0xa9a59a, 0x5d6b78, 0xb8b2a6, 0x7b8a86, 0x9aa7b4, 0x4f5d6a, 0xc2b8a3];
 const MID_COLORS = [0x9c5a43, 0xb07b5c, 0xc9b79b, 0x8c6e5a, 0xa39283, 0x7d6656, 0xbfa98a, 0x6e7a73, 0xd8c8a8];
@@ -28,6 +32,8 @@ export class City {
     this.qid = 0;
     this.currentLevel = 4;
     this.walls = []; this.plain = []; this.roofs = []; this.cars = [];
+    this.kit = {};         // asset → instances (town kit models)
+    this.waterfront = [];  // edges where waves can break over a deck: { x, z, nx, nz, len, top }
     this.occ = new Map(); // occupancy circles for placement
     const rng = mulberry32(1234);
 
@@ -36,6 +42,7 @@ export class City {
     this.generateBridges(rng);
     this.generateIndustry(rng);
     this.generateDowntown(rng);
+    this.generateQuays(rng);
     this.generateTown(rng);
 
     for (const c of this.colliders) if (c.bottom === undefined) floorMap.stampOBB(c);
@@ -107,7 +114,24 @@ export class City {
   }
 
   // ---- buildings ----------------------------------------------------------------
+  kitItem(asset, it) { (this.kit[asset] || (this.kit[asset] = [])).push(it); }
+
+  /** A building from the town kit, scaled to the footprint; its height is the wall height. */
+  kitBuilding(x, z, hx, hz, ang, h, asset, wall, roof, kind) {
+    const info = KIT[asset].info;
+    const base = this.minGroundOBB(x, z, hx, hz, ang);
+    const sy = h / info.h, top = base + h, peak = top + info.roof * sy;
+    this.kitItem(asset, { x, y: base, z, ang, sx: (2 * hx) / info.w, sy, sz: (2 * hz) / info.d, wall, roof });
+    const c = this.addOBB(x, z, hx, hz, ang, peak, kind);
+    const pitched = info.roof > 1.2;
+    const ir = Math.min(hx, hz) * (pitched ? 0.35 : (Math.abs(Math.cos(ang) * Math.sin(ang)) > 0.3 ? 0.6 : 0.85));
+    c.roof = { minx: x - ir, maxx: x + ir, minz: z - ir, maxz: z + ir, top: pitched ? top + info.roof * sy * 0.7 : top + 0.05 };
+    c.base = base;
+    return c;
+  }
+
   building(rng, x, z, hx, hz, ang, h, color, style, kind, opts = {}) {
+    if (KIT_OK && opts.asset) return this.kitBuilding(x, z, hx, hz, ang, h, opts.asset, color, opts.roofColor ?? pick(rng, ROOF_COLORS), kind);
     const g = this.minGroundOBB(x, z, hx, hz, ang) - 1.2;
     const top = g + 1.2 + h;
     let roof = null;
@@ -124,6 +148,7 @@ export class City {
       const c = this.addOBB(x, z, hx, hz, ang, top + rh, kind);
       const ir = Math.min(hx, hz) * 0.35;
       c.roof = { minx: x - ir, maxx: x + ir, minz: z - ir, maxz: z + ir, top: top + rh * 0.7 };
+      c.base = g + 1.2;
       return c;
     }
     if (opts.clutter) {
@@ -134,7 +159,9 @@ export class City {
       }
       if (h > 70 && rng() < 0.35) this.obox(this.plain, x, z, 0.6, 0.6, 0, top, top + rand(rng, 8, 20), 0xbbbbbb);
     }
-    return this.addOBB(x, z, hx, hz, ang, top, kind, roof);
+    const c = this.addOBB(x, z, hx, hz, ang, top, kind, roof);
+    c.base = g + 1.2;
+    return c;
   }
 
   townArea(x, z) { return x > -1400 && x < 1400 && z > -1500 && z < 300; }
@@ -181,14 +208,18 @@ export class City {
         const stack = randInt(rng, 1, 3);
         if (!this.free(x, z, 8, 4)) continue;
         const g = this.minGroundOBB(x, z, 1.3, 6.2, ang);
-        for (let s = 0; s < stack; s++) this.obox(this.plain, x, z, 1.25, 6.1, ang, g + s * 2.6, g + (s + 1) * 2.6, pick(rng, CONTAINER_COLORS));
+        for (let s = 0; s < stack; s++) {
+          if (KIT_OK) this.kitItem('container', { x, y: g + s * 2.6, z, ang: ang + (rng() < 0.5 ? 0 : Math.PI), sx: 2.5 / 2.44, sy: 1, sz: 12.2 / 12.19, wall: pick(rng, CONTAINER_COLORS) });
+          else this.obox(this.plain, x, z, 1.25, 6.1, ang, g + s * 2.6, g + (s + 1) * 2.6, pick(rng, CONTAINER_COLORS));
+        }
         this.addOBB(x, z, 1.25, 6.1, ang, g + stack * 2.6, 'containers');
         this.occupy(x, z, 7); n++;
         continue;
       }
       const hx = rand(rng, 10, 22), hz = rand(rng, 8, 15), r = Math.hypot(hx, hz);
       if (!this.free(x, z, r * 0.8, 8)) continue;
-      this.building(rng, x, z, hx, hz, ang, rand(rng, 7, 14), pick(rng, WARE_COLORS), 3, 'warehouse');
+      const wh = rand(rng, 7, 14);
+      this.building(rng, x, z, hx, hz, ang, wh, pick(rng, WARE_COLORS), 3, 'warehouse', { asset: wh > 10.5 ? 'warehouse_brick' : 'warehouse_gable', roofColor: pick(rng, [0x6a6e70, 0x7a5a48, 0x5d6a72]) });
       this.occupy(x, z, r * 0.8); n++;
     }
   }
@@ -276,8 +307,10 @@ export class City {
             const shop = w.d < 90 && Math.hypot(x - DOWNTOWN.x, z - DOWNTOWN.z) < 900 && rng() < 0.5;
             const hx = shop ? rand(rng, 4.5, 7.5) : rand(rng, 3.4, 5.4), hz = shop ? rand(rng, 4.5, 7) : rand(rng, 3.4, 5), r = Math.hypot(hx, hz);
             if (!this.free(x, z, r * 0.8, 2.5)) continue;
-            if (shop) this.building(rng, x, z, hx, hz, ang, rand(rng, 6, 13), pick(rng, MID_COLORS), 2, 'building', { pitched: rng() < 0.4 });
-            else this.building(rng, x, z, hx, hz, ang, rand(rng, 3.2, 6.5), pick(rng, HOUSE_COLORS), 2, 'house', { pitched: true });
+            if (shop) {
+              const sh = rand(rng, 6, 13), pitched = rng() < 0.4;
+              this.building(rng, x, z, hx, hz, ang, sh, pick(rng, MID_COLORS), 2, 'building', { pitched, asset: pitched ? 'shop_pitched' : sh < 9 ? 'shop_two' : 'shop_three' });
+            } else this.house(rng, x, z, hx, hz, ang);
             this.occupy(x, z, r * 0.8);
           }
         }
@@ -292,8 +325,85 @@ export class City {
       const hx = rand(rng, 4, 6.5), hz = rand(rng, 3.5, 5.5), r = Math.hypot(hx, hz);
       if (!this.free(x, z, r, 25)) continue;
       const e = 4, ang = Math.atan2(groundHeight(x + e, z) - groundHeight(x - e, z), groundHeight(x, z + e) - groundHeight(x, z - e));
-      this.building(rng, x, z, hx, hz, ang, rand(rng, 3.5, 6), pick(rng, HOUSE_COLORS), 2, 'house', { pitched: true });
+      this.house(rng, x, z, hx, hz, ang);
       this.occupy(x, z, r); n++;
+    }
+  }
+
+  /** A house: one or two storeys, the model chosen to suit the plot's proportions. */
+  house(rng, x, z, hx, hz, ang) {
+    const h = rand(rng, 3.2, 6.2), aspect = hx / hz;
+    const asset = h < 4.4 ? (aspect > 1.15 ? 'house_bungalow' : 'house_cottage') : aspect < 0.85 ? 'house_gablefront' : rng() < 0.5 ? 'house_two' : 'house_hip';
+    return this.building(rng, x, z, hx, hz, ang, h, pick(rng, HOUSE_COLORS), 2, 'house', { pitched: true, asset });
+  }
+
+  /**
+   * Stone quays along the harbour front and embankments along the river through downtown: 8 m wall
+   * segments with a paved apron, coping at QUAY_TOP. Waves break over them as the water comes up.
+   */
+  generateQuays(rng) {
+    if (!KIT_OK) return;
+    const SEG = 8;
+    const place = (x, z, wx, wz, len) => { // (wx, wz): unit vector from the quay toward the water
+      if (this.reservedHit(x, z, 14) || !this.free(x, z, 4, 0)) return false;
+      if (groundSlope(x, z) > 0.25) return false;
+      const ang = Math.atan2(wx, wz); // kit front (+z local) faces the water
+      const ladder = rng() < 0.18;
+      // coping flush with the land behind it, so low stretches of waterfront go under first
+      const top = clamp(Math.max(groundHeight(x - wx * 4, z - wz * 4), groundHeight(x - wx * 7, z - wz * 7)) + 0.05, 1.4, QUAY_TOP + 0.6);
+      this.kitItem(ladder ? 'quay_ladder' : 'quay', { x, y: top, z, ang, sx: len / SEG, sy: 1, sz: 1 });
+      // collider: the apron behind the face
+      const cx = x - wx * 3.1, cz = z - wz * 3.1;
+      const c = this.addOBB(cx, cz, len / 2, 3.3, ang, top, 'quay');
+      c.roof = { minx: cx - 2, maxx: cx + 2, minz: cz - 2, maxz: cz + 2, top };
+      c.base = top - 0.6; // people waiting here are "at the water"
+      this.waterfront.push({ x, z, nx: wx, nz: wz, len, top, quay: true });
+      if (rng() < 0.3) this.kitItem('lamp_post', { x: x - wx * 1.4, y: top, z: z - wz * 1.4, ang: ang + Math.PI });
+      this.occupy(cx, cz, 4.5);
+      return true;
+    };
+    // the bank: walk from a point out along a direction until the water starts
+    const toBank = (x, z, dx, dz) => {
+      for (let s = 0; s < 120; s += 1) { if (waterInfo(x + dx * s, z + dz * s).d <= 0) return { x: x + dx * s, z: z + dz * s }; }
+      return null;
+    };
+    // river embankments through downtown
+    for (const [ri, tMax] of [[0, 0.42], [1, 0.25]]) {
+      const r = RIVERS[ri];
+      for (const side of [-1, 1]) {
+        let acc = SEG;
+        for (let i = 0; i < r.pts.length - 1; i++) {
+          const a = r.pts[i]; if (a.t > tMax) break;
+          const b = r.pts[i + 1], dx = b.x - a.x, dz = b.z - a.z, l = Math.hypot(dx, dz);
+          const tx = dx / l, tz = dz / l, nx = -tz * side, nz = tx * side; // nx,nz: out of the river
+          for (let u = acc; u < l; u += SEG) {
+            const px = a.x + tx * u, pz = a.z + tz * u;
+            const w = r.w0 + (r.w1 - r.w0) * a.t;
+            const land = { x: px + nx * (w / 2 + 40), z: pz + nz * (w / 2 + 40) };
+            if (waterInfo(land.x, land.z).d < 2) continue;
+            const bank = toBank(land.x, land.z, -nx, -nz);
+            if (!bank) continue;
+            place(bank.x + nx * 0.6, bank.z + nz * 0.6, -nx, -nz, SEG + 0.4);
+          }
+          acc = ((acc - l) % SEG + SEG) % SEG;
+        }
+      }
+    }
+    // harbour front: the bay's north shore around downtown and the industrial docks
+    let last = null;
+    for (let th = Math.PI * 1.08; th <= Math.PI * 1.92; th += 0.0015) {
+      const ox = Math.cos(th), oz = Math.sin(th);
+      let pt = null;
+      for (let rr = 200; rr < 1500; rr += 2) {
+        const x = ox * rr * 1.25, z = 260 + oz * rr;
+        if (waterInfo(x, z).d >= 0) { pt = { x, z }; break; }
+      }
+      if (!pt || Math.abs(pt.x - DOWNTOWN.x) > 760) { last = null; continue; }
+      if (last && Math.hypot(pt.x - last.x, pt.z - last.z) < SEG) continue;
+      if (last && Math.hypot(pt.x - last.x, pt.z - last.z) > SEG * 2.2) last = null;
+      const e = 5, gx = waterInfo(pt.x + e, pt.z).d - waterInfo(pt.x - e, pt.z).d, gz = waterInfo(pt.x, pt.z + e).d - waterInfo(pt.x, pt.z - e).d;
+      const gl = Math.hypot(gx, gz) || 1;
+      if (place(pt.x + gx / gl * 0.6, pt.z + gz / gl * 0.6, -gx / gl, -gz / gl, SEG + 0.6)) last = pt;
     }
   }
 
@@ -335,14 +445,27 @@ export class City {
       const len = rand(rng, 28, 60), hw = rand(rng, 3, 4.5);
       const cx = x - ax * len / 2, cz = z - az * len / 2;
       if (groundHeight(x - ax * len, z - az * len) > -1.5) continue; // needs water at its end
-      const top = 5.6;
-      this.obox(this.plain, cx, cz, hw, len / 2, ang, top - 0.6, top, 0x6b5640);
+      const top = PIER_TOP;
       const cs = Math.cos(ang), sn = Math.sin(ang);
-      for (let s = -len / 2 + 3; s < len / 2; s += 7) for (const side of [-1, 1]) {
-        const lx = side * (hw - 0.4), px = cx + lx * cs + s * sn, pz = cz - lx * sn + s * cs;
-        this.obox(this.plain, px, pz, 0.3, 0.3, ang, groundHeight(px, pz) - 1, top - 0.6, 0x3e3226);
+      if (KIT_OK) { // modular bays, the last one with bollards, ladder and lamp at the seaward end
+        const n = Math.max(1, Math.round(len / 6)), bl = len / n;
+        for (let k = 0; k < n; k++) {
+          const s = -len / 2 + bl * (k + 0.5);
+          this.kitItem(k === n - 1 ? 'pier_end' : 'pier_bay', { x: cx + s * sn, y: top, z: cz + s * cs, ang: ang + Math.PI, sx: (2 * hw) / 6, sy: 1, sz: bl / 6 });
+        }
+      } else {
+        this.obox(this.plain, cx, cz, hw, len / 2, ang, top - 0.6, top, 0x6b5640);
+        for (let s = -len / 2 + 3; s < len / 2; s += 7) for (const side of [-1, 1]) {
+          const lx = side * (hw - 0.4), px = cx + lx * cs + s * sn, pz = cz - lx * sn + s * cs;
+          this.obox(this.plain, px, pz, 0.3, 0.3, ang, groundHeight(px, pz) - 1, top - 0.6, 0x3e3226);
+        }
       }
-      this.addOBB(cx, cz, hw, len / 2, ang, top, 'pier');
+      const pc = this.addOBB(cx, cz, hw, len / 2, ang, top, 'pier');
+      pc.base = top - 1; pc.pierEnd = { x: x - ax * (len - 4), z: z - az * (len - 4) };
+      pc.roof = { minx: pc.pierEnd.x - 2, maxx: pc.pierEnd.x + 2, minz: pc.pierEnd.z - 2, maxz: pc.pierEnd.z + 2, top };
+      // the outer end and both sides take the waves
+      this.waterfront.push({ x: x - ax * len, z: z - az * len, nx: -ax, nz: -az, len: hw * 2, top });
+      for (const side of [-1, 1]) this.waterfront.push({ x: cx + side * hw * cs, z: cz - side * hw * sn, nx: side * cs, nz: -side * sn, len: len * 0.8, top });
       this.occupy(cx, cz, len / 2); n++;
     }
   }
@@ -415,6 +538,16 @@ export class City {
 
   buildMeshes(scene, uniforms) {
     this.roadMeshes(scene, uniforms);
+    if (KIT_OK) {
+      for (const [asset, items] of Object.entries(this.kit)) {
+        const small = asset.startsWith('car') || asset === 'lamp_post';
+        placeKit(scene, uniforms, asset, items, { lodDist: small ? 90 : asset.startsWith('pier') || asset.startsWith('quay') ? 220 : 170, noReflect: small });
+      }
+      // cars from the road pass
+      const cars = { car_sedan: [], car_van: [] };
+      this.cars.forEach((c, i) => cars[i % 4 === 3 ? 'car_van' : 'car_sedan'].push({ x: c.x, y: c.y, z: c.z, ang: c.rot, wall: c.color }));
+      for (const [asset, items] of Object.entries(cars)) placeKit(scene, uniforms, asset, items, { lodDist: 90, noReflect: true });
+    }
     const wallMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.82, metalness: 0.05 });
     patchFloodMaterial(wallMat, uniforms, true);
     scene.add(this.instancedBoxes(this.walls, wallMat, true));
@@ -446,6 +579,7 @@ export class City {
     }));
 
     const carGeo = new THREE.BoxGeometry(1.8, 1.4, 4.2); carGeo.translate(0, 0.7, 0);
+    if (KIT_OK) this.cars.length = 0; // drawn from the kit above
     const carMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5, metalness: 0.4 });
     patchFloodMaterial(carMat, uniforms, false);
     if (this.cars.length) scene.add(tiled(this.cars, (c) => [c.x, c.z], (list) => {
@@ -483,7 +617,8 @@ export class City {
     scene.add(lh);
   }
 
-  update(dt, night, time) {
+  update(dt, night, time, cam) {
+    if (cam) updateKitLOD(cam);
     this.beam.rotation.y = time * 0.6;
     this.beamMat.opacity = 0.16 * night;
     this.lampMat.emissiveIntensity = 0.3 + 3 * night;

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { fbm, smoothstep, mulberry32, rand, clamp } from './util.js';
 import { patchFloodMaterial } from './shaders.js';
 import { tiled, LAYER_NO_REFLECT } from './tiles.js';
+import { KIT_OK, placeKit } from './townkit.js';
 
 // ---------------------------------------------------------------------------
 // Landscape: a natural bay with a narrow mouth to the sea (south, +z), islands,
@@ -292,6 +293,19 @@ export function buildTerrain(scene, uniforms, city) {
     if (fbm(x * 0.004, z * 0.004, 2, 21) < -0.1 && rng() > 0.25) continue;
     if (city && city.pointInBuilding(x, z, 3)) continue;
     trees.push({ x, z, h, ht: rand(rng, 6, 13), w: rand(rng, 1.8, 3.2), hsl: [rand(rng, 0.22, 0.33), rand(rng, 0.3, 0.55), rand(rng, 0.13, 0.25)] });
+  }
+  if (KIT_OK) { // modelled trees: broadleaf low down, pines on the higher slopes
+    const broad = [], pine = [];
+    for (const t of trees) {
+      const isPine = t.h > 28 ? rng() < 0.75 : rng() < 0.2;
+      const c = col.setHSL(...t.hsl).getHex();
+      const ang = rng() * Math.PI * 2;
+      if (isPine) pine.push({ x: t.x, y: t.h - 0.3, z: t.z, ang, sx: t.w / 2.3, sy: t.ht / 9.5, sz: t.w / 2.3, wall: c });
+      else broad.push({ x: t.x, y: t.h - 0.3, z: t.z, ang, sx: t.w / 2.6, sy: t.ht / 8.5, sz: t.w / 2.6, wall: c });
+    }
+    placeKit(scene, uniforms, 'tree_broad', broad, { lodDist: 60, noReflect: true });
+    placeKit(scene, uniforms, 'tree_pine', pine, { lodDist: 60, noReflect: true });
+    return group;
   }
   const addTiles = (grp) => { grp.children.forEach((o) => { o.layers.set(LAYER_NO_REFLECT); o.castShadow = true; }); scene.add(grp); };
   addTiles(tiled(trees, (t) => [t.x, t.z], (list) => {
