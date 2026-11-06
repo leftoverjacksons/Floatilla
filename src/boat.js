@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { rand, pick, clamp, lerp, angleDiff, damp, mulberry32, boatName } from './util.js';
-import { MODELS } from './models.js';
+import { MODELS, modelFor } from './models.js';
 
 // ---------------------------------------------------------------------------
 // Boat archetypes. Ranges are sampled per boat so each hull is unique.
@@ -318,7 +318,7 @@ export class Boat {
     this.rigs = []; this.props = []; this.oars = []; this.lanterns = [];
     const rng = mulberry32(d.seed);
 
-    const model = d.kind === 'sailboat' && MODELS.sloop ? MODELS.sloop : null;
+    const model = modelFor(d.kind);
     this.usesModel = !!model;
     if (model) this.buildFromModel(body, model);
     else if (d.kind === 'raft') this.buildRaft(body, rng);
@@ -338,7 +338,9 @@ export class Boat {
     // free deck zone (z range) for modules; kinds narrow it.
     let zone = [-L * 0.32, L * 0.3];
     this.helm = new THREE.Vector3(0, dy, -L * 0.36);
-    switch (d.kind) {
+    this.helmEnclosed = false;
+    if (model) { zone = this.modelZone; this.helm.copy(this.modelHelm); this.helmEnclosed = !!model.info.helmEnclosed; }
+    else switch (d.kind) {
       case 'rowboat':
         box(body, d.deckColor, B * 0.8, 0.05, 0.25, 0, dy + 0.3, -L * 0.05);
         box(body, d.deckColor, B * 0.7, 0.05, 0.25, 0, dy + 0.3, L * 0.22);
@@ -459,7 +461,7 @@ export class Boat {
         break;
       }
     }
-    if (d.engine > 0 && (d.kind === 'skiff' || d.kind === 'raider' || d.kind === 'sailboat')) this.makeOutboard(body, 0);
+    if (d.engine > 0 && (d.kind === 'skiff' || d.kind === 'raider' || d.kind === 'sailboat') && !(model && model.info.outboard)) this.makeOutboard(body, 0);
     if (this.helmEnclosed === undefined) this.helmEnclosed = false;
 
     // stern flag + lantern
@@ -499,19 +501,25 @@ export class Boat {
     this.deckProfile = info.walk.map(([z, w, y]) => ({ z: z * sz, w: w * sx, y }));
     this.modelObstacles = info.obstacles.map((o) => ({ minx: o.minx * sx, maxx: o.maxx * sx, minz: o.minz * sz, maxz: o.maxz * sz, top: o.top }));
     this.modelHelm = new THREE.Vector3(info.helm[0] * sx, info.helm[1], info.helm[2] * sz);
-    this.modelZone = [0.16 * d.length, 0.34 * d.length]; // foredeck, forward of the mast
+    this.modelZone = d.kind === 'sailboat' ? [0.16 * d.length, 0.34 * d.length] // sloop: foredeck, forward of the mast
+      : [info.zone[0] * sz, info.zone[1] * sz];
     this.sections = null;
-    // the game's animated sail hangs off the model's boom pivot
-    const pivot = inst.getObjectByName('BoomPivot');
-    if (pivot) {
-      const h = info.mastH, foot = info.boomLen;
+    // the game's animated sails hang off the model's boom pivots
+    const rigs = info.rigs || (info.mastH ? [{ pivot: 'BoomPivot', mastH: info.mastH, boomLen: info.boomLen, mastZ: info.mast[2] }] : []);
+    for (const r of rigs) {
+      const pivot = inst.getObjectByName(r.pivot);
+      if (!pivot) continue;
+      const h = r.mastH, foot = r.boomLen;
       const sail = new THREE.Mesh(SAIL_GEO, M(d.clothColor, { side: THREE.DoubleSide, roughness: 0.95 }));
       sail.castShadow = true; sail.userData.noWalk = true;
       sail.scale.set(0.2, h - 1.3, foot);
       pivot.add(sail);
-      const marker = new THREE.Object3D(); marker.position.z = info.mast[2] * sz;
+      const marker = new THREE.Object3D(); marker.position.z = r.mastZ * sz;
       this.rigs.push({ group: marker, pivot, sail, h, foot, area: 0.5 * (h - 1.3) * foot * sz });
     }
+    for (const name of info.outboard || []) { const p = inst.getObjectByName(name); if (p) this.props.push(p); }
+    for (const name of info.oars || []) { const g = inst.getObjectByName(name); if (g) this.oars.push({ g, s: name.endsWith('L') ? 1 : -1 }); }
+    this.smokePos = info.smoke ? new THREE.Vector3(info.smoke[0] * sx, info.smoke[1], info.smoke[2] * sz) : null;
   }
 
   /**
@@ -921,7 +929,7 @@ export class Boat {
         ctx.fx.emit(this.x + fx * L * 0.48, hc + 0.3, this.z + fz * L * 0.48, lx * (Math.random() - 0.5) * 3 + fx * sp * 0.4, 1.5 + Math.random() * 2, lz * (Math.random() - 0.5) * 3 + fz * sp * 0.4, 0.9, 0.35, 1);
       }
       if (this.engineOn && this.design.kind === 'tug' && Math.random() < dt * 6) {
-        const p = this.root.localToWorld(new THREE.Vector3(0, this.deckY + 4, this.L * 0.08 - 2.2));
+        const p = this.root.localToWorld(this.smokePos ? this.smokePos.clone() : new THREE.Vector3(0, this.deckY + 4, this.L * 0.08 - 2.2));
         ctx.fx.emit(p.x, p.y, p.z, W.x * 0.3, 1.2, W.y * 0.3, 4, 1.2, 2, 0.25, 0.25, 0.25);
       }
     }
