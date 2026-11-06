@@ -1,5 +1,6 @@
 import { Boat } from './boat.js';
 import { Person, Animal } from './people.js';
+import { findSpot, waterInfo, groundHeight } from './terrain.js';
 
 // Save format is plain JSON in localStorage. Transient world entities (floating
 // supplies, rooftop survivors, derelicts, raiders) are not stored; they are
@@ -60,6 +61,12 @@ export function restore(game, data) {
     }
     for (const a of s.animals) b.addAnimal(new Animal(rng, a.type, a.seed));
     return b;
+  });
+  // Saves from an older map can put boats on land: move any stranded boat to open water off the river mouth.
+  boats.forEach((b, i) => {
+    if (env.level - groundHeight(b.x, b.z) > b.design.draft + 0.6) return;
+    const p = findSpot(-40 + (i % 4) * 25, -150 + Math.floor(i / 4) * 25, -40, env.level - b.design.draft - 1.5, 500, (x, z) => waterInfo(x, z).d < -15);
+    b.x = p.x; b.z = p.z; b.vx = b.vz = 0;
   });
   fleet.player = boats[data.fleet.playerIndex] || boats[0];
   fleet.player.role = 'player';
