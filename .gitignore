@@ -1,2 +1,5 @@
 node_modules
 dist
+/comparison/
+/package/
+/npm-runtime.tgz

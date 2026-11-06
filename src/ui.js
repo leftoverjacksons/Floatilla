@@ -24,9 +24,9 @@ export class UI {
     const el = document.createElement('div');
     el.className = `toast ${kind}`; el.textContent = msg;
     this.toasts.prepend(el);
-    while (this.toasts.children.length > 6) this.toasts.lastChild.remove();
-    setTimeout(() => el.classList.add('fade'), 6000);
-    setTimeout(() => el.remove(), 7000);
+    while (this.toasts.children.length > 2) this.toasts.lastChild.remove();
+    setTimeout(() => el.classList.add('fade'), 4500);
+    setTimeout(() => el.remove(), 5500);
   }
 
   // ------------------------------------------------------------- HUD
@@ -37,7 +37,7 @@ export class UI {
     const it = g.world.findInteraction();
     this.prompt.textContent = it ? it.label : '';
     this.prompt.style.opacity = it ? 1 : 0;
-    if (this.t < 0.12) return;
+    if (this.t < 0.2) return;
     this.t = 0;
 
     const kn = (b.forwardSpeed * 1.944).toFixed(1);
@@ -74,6 +74,7 @@ export class UI {
 
     const people = fleet.people;
     const pp = g.playerPerson;
+    $('hud-fleet').classList.toggle('solo', fleet.boats.length === 1);
     $('hud-fleet').innerHTML = `<div class="big">Floatilla · ${fleet.boats.length} boat${fleet.boats.length > 1 ? 's' : ''} · ${people.length} people · ${fleet.animals.length} animals</div>
       <div class="dim">${fleet.detached ? 'DETACHED — fleet anchored (F to recall)' : fleet.mode === 'hold' ? 'Holding position (G)' : 'Following your lead'}</div>
       <div>You: health ${Math.round(pp.health)}</div>` +

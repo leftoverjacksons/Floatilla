@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { rand, pick, clamp, lerp, angleDiff, damp, mulberry32, boatName } from './util.js';
+import { batchStaticPrimitives, disposeBoatBody } from './boat-rendering.js';
 
 // ---------------------------------------------------------------------------
 // Boat archetypes. Ranges are sampled per boat so each hull is unique.
@@ -237,6 +238,7 @@ function makeSailGeometry() {
   return g;
 }
 const SAIL_GEO = makeSailGeometry();
+const SHARED_GEOMETRIES = new Set([BOX, CYL, SAIL_GEO]);
 
 /** Mast + boom + triangular sail. Sail local frame: unit bulge in x, height in y, foot along -z. */
 function makeRig(parent, z, h, foot, cloth, deckY) {
@@ -310,7 +312,7 @@ export class Boat {
 
   // ---- visual construction --------------------------------------------------
   build() {
-    if (this.body) this.root.remove(this.body);
+    if (this.body) { this.releaseBody(); this.root.remove(this.body); }
     const d = this.design, L = d.length, B = d.beam;
     this.recompute();
     const body = new THREE.Group(); this.body = body; this.root.add(body);
@@ -469,6 +471,11 @@ export class Boat {
     this.buildModules(body, zone);
     this.computeStations(zone);
     this.computeWalkable(body);
+    const animated = new Set([
+      ...this.rigs.map((r) => r.group), ...this.props, ...this.oars.map((o) => o.g),
+      this.flag.parent, ...this.lanterns, this.lightHead,
+    ]);
+    batchStaticPrimitives(body, animated, SHARED_GEOMETRIES);
     this.zone = zone;
   }
 
@@ -946,5 +953,6 @@ export class Boat {
     if (this.lens) this.lens.material.emissiveIntensity = this.lightOn ? 4 : 0;
   }
 
-  dispose(scene) { scene.remove(this.root); }
+  releaseBody() { disposeBoatBody(this.body, SHARED_GEOMETRIES, new Set([...mats.values(), WATER_MASK_MAT])); }
+  dispose(scene) { scene.remove(this.root); this.releaseBody(); }
 }

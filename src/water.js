@@ -52,8 +52,8 @@ export class Water {
       uLight: { value: 1 },
       uRain: { value: 0 }, uFlash: { value: 0 },
       uWind: { value: new THREE.Vector2(1, 0) },
-      uDeep: { value: new THREE.Color(0.015, 0.09, 0.13) },
-      uShallow: { value: new THREE.Color(0.08, 0.26, 0.26) },
+      uDeep: { value: new THREE.Color(0.018, 0.12, 0.17) },
+      uShallow: { value: new THREE.Color(0.09, 0.3, 0.28) },
       uMurk: { value: new THREE.Color(0.17, 0.17, 0.1) },
       uRing: { value: 0 },
       uRefl: { value: null }, uReflMatrix: { value: new THREE.Matrix4() }, uReflOn: { value: 0 },
@@ -61,6 +61,7 @@ export class Water {
       ...THREE.UniformsLib.fog,
     };
     const matNear = new THREE.ShaderMaterial({
+      defines: { WATER_WAVES: 5, WATER_RIPPLES: 4, WATER_FOAM: 1 },
       uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG,
       transparent: true, fog: true, depthWrite: true,
     });
@@ -75,6 +76,30 @@ export class Water {
     this.far = new THREE.Mesh(rg, matFar);
     for (const m of [this.near, this.far]) { m.frustumCulled = false; m.renderOrder = 1; scene.add(m); }
     this.updateUniforms();
+    this.gridSegments = seg;
+  }
+
+  // Compile out unused per-pixel work; buoyancy always uses the same three waves.
+  setQuality(q) {
+    const segments = q === 'low' ? 96 : q === 'medium' ? 128 : 180;
+    if (segments !== this.gridSegments) {
+      const old = this.near.geometry;
+      this.near.geometry = new THREE.PlaneGeometry(900, 900, segments, segments);
+      this.near.geometry.rotateX(-Math.PI / 2);
+      this.gridSegments = segments;
+      this.snap = 900 / segments;
+      old.dispose();
+    }
+    const waves = q === 'low' ? 3 : q === 'medium' ? 5 : 7;
+    const ripples = q === 'low' ? 2 : q === 'medium' ? 4 : 8;
+    // Keep the full range of wavelengths at every tier, rather than retaining only
+    // the shortest waves (which looked like a regular fabric pattern).
+    this.rippleSet = Array.from({ length: ripples }, (_, i) => RIPPLES[Math.round(i * (RIPPLES.length - 1) / (ripples - 1))]);
+    for (const mesh of [this.near, this.far]) {
+      const mat = mesh.material;
+      mat.defines = { WATER_WAVES: waves, WATER_RIPPLES: ripples, WATER_FOAM: q === 'low' ? 0 : 1 };
+      mat.needsUpdate = true;
+    }
   }
 
   setSeaState(sea, windAngle = 0, windSpeed = 5, rain = 0) {
@@ -83,10 +108,12 @@ export class Water {
     // Ripple directions are fixed in world space; only their amplitudes follow the wind.
     // (Rotating directions would sweep phase across the whole sea and make it appear to slide.)
     const wf = 0.25 + Math.min(1.5, windSpeed / 9);
-    RIPPLES.forEach((r, i) => {
+    (this.rippleSet || RIPPLES).forEach((r, i) => {
       const align = Math.max(0, Math.cos(r.angle - windAngle));
       const amp = r.amp * wf * (0.3 + 0.7 * align * align) * (1 + rain * (r.lambda < 0.8 ? 1.5 : 0.3));
       this.uniforms.uRip.value[i].set(r.dx, r.dz, r.k, amp);
+      this.uniforms.uRipW.value[i] = r.omega;
+      this.uniforms.uRipPh.value[i] = r.phase;
     });
   }
 
@@ -222,6 +249,7 @@ uniform vec4 uWaves[7];
 uniform float uOmega[7];
 uniform vec3 uSunDir, uSunColor, uSkyColor, uHorizon, uDeep, uShallow, uMurk;
 uniform sampler2D uRefl; uniform mat4 uReflMatrix; uniform float uReflOn;
+uniform sampler2D uFloor; uniform vec4 uFloorRect;
 uniform vec4 uRip[12]; uniform float uRipW[12]; uniform float uRipPh[12];
 varying vec3 vWorld; varying vec2 vP0; varying float vAtten; varying float vDepth;
 #include <common>
@@ -232,7 +260,7 @@ float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); vec2 u = f*f*(3.0-2.0*f);
 void main(){
   if (uRing < 0.5 && length(vP0 - uCenter) > 443.0) discard;
   vec3 n = vec3(0.0, 1.0, 0.0);
-  for (int i = 0; i < 7; i++) {
+  for (int i = 0; i < WATER_WAVES; i++) {
     vec4 w = uWaves[i];
     float f = w.z * dot(w.xy, vP0) - uOmega[i] * uTime;
     float WA = w.z * w.w * vAtten;
@@ -243,12 +271,15 @@ void main(){
   // rest position so they ride the swell's orbital motion. Each fades out before it can alias.
   float camDist = length(cameraPosition - vWorld);
   vec2 rg = vec2(0.0);
-  for (int i = 0; i < 12; i++) {
+  for (int i = 0; i < WATER_RIPPLES; i++) {
     vec4 r = uRip[i];
     float fade = clamp(1.0 - camDist * r.z / 950.0, 0.0, 1.0);
     if (fade <= 0.0) continue;
     float ph = r.z * dot(r.xy, vP0) - uRipW[i] * uTime + uRipPh[i];
-    rg += r.xy * (r.z * r.w * cos(ph) * fade);
+    // Pixel-footprint filtering prevents moire and crawling on the distant water.
+    float filterWidth = fwidth(ph);
+    fade *= 1.0 - smoothstep(0.5, 2.5, filterWidth);
+    rg += r.xy * (r.z * r.w * cos(ph) * fade * 0.65);
   }
   rg *= (0.6 + 0.4 * vAtten);
   float rr = 0.0;
@@ -277,9 +308,12 @@ void main(){
     sky = refl;
   }
 
-  float depthF = smoothstep(0.0, 14.0, vDepth);
+  // Sample floor depth per pixel: interpolating it across the coarse wave mesh
+  // made stepped foam triangles around otherwise straight harbor walls.
+  float surfaceDepth = uLevel - texture2D(uFloor, (vWorld.xz - uFloorRect.xy) / uFloorRect.zw).r;
+  float depthF = smoothstep(0.0, 14.0, surfaceDepth);
   vec3 wc = mix(uShallow, uDeep, depthF);
-  float murk = smoothstep(150.0, -150.0, vWorld.z) * 0.65;
+  float murk = (1.0 - smoothstep(-150.0, 150.0, vWorld.z)) * 0.4;
   wc = mix(wc, uMurk, murk * (0.5 + 0.5 * depthF));
   float sunUp = clamp(uSunDir.y * 4.0, 0.0, 1.0);
   vec3 body = wc * (0.35 + 0.65 * max(dot(n, uSunDir), 0.0) * sunUp) * uLight;
@@ -291,15 +325,18 @@ void main(){
   float nh = max(dot(n, H), 0.0);
   col += uSunColor * (pow(nh, 350.0) * 5.0 + pow(nh, 40.0) * 0.12) * uSunInt;
 
-  vec2 wob = vec2(sin(uTime * 0.11), cos(uTime * 0.083)) * 0.6;
-  float fn = vnoise(vP0 * 0.7 + wob) * vnoise(vP0 * 1.9 - wob * 1.3 + 5.0);
+  float fn = 0.5;
+  #if WATER_FOAM == 1
+    vec2 wob = vec2(sin(uTime * 0.11), cos(uTime * 0.083)) * 0.6;
+    fn = vnoise(vP0 * 0.7 + wob) * vnoise(vP0 * 1.9 - wob * 1.3 + 5.0);
+  #endif
   float foamCrest = smoothstep(0.65, 1.2, crest) * smoothstep(0.9, 1.8, uSea);
-  float shore = (1.0 - smoothstep(0.0, 1.4, vDepth)) * step(-0.6, vDepth);
-  float foam = clamp((foamCrest + shore * 0.9) * (0.35 + fn * 1.6), 0.0, 1.0);
+  float shore = (1.0 - smoothstep(0.0, 0.8, surfaceDepth)) * step(-0.2, surfaceDepth);
+  float foam = clamp((foamCrest + shore * 0.55) * (0.2 + fn * 1.4), 0.0, 1.0);
   col = mix(col, vec3(0.85, 0.88, 0.88) * uLight, foam * 0.8);
   col += vec3(0.6, 0.65, 0.8) * uFlash;
 
-  float alpha = mix(0.7, 0.96, smoothstep(0.0, 9.0, vDepth));
+  float alpha = mix(0.8, 0.97, smoothstep(0.0, 9.0, surfaceDepth));
   alpha = clamp(max(alpha, fres) + foam, 0.0, 1.0);
   // Guard the HDR pipeline: a single Inf/NaN pixel turns into black blocks once bloom spreads it.
   if (any(isnan(col)) || any(isinf(col)) || !(abs(col.r) < 1e5) || !(abs(col.g) < 1e5) || !(abs(col.b) < 1e5)) col = vec3(0.0);
