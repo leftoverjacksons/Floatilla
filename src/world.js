@@ -16,7 +16,7 @@ const PICKUPS = {
   log: { label: 'Driftwood', w: 3, give: (r) => ({ wood: randInt(r, 2, 4) }) },
 };
 const PICKUP_KEYS = Object.keys(PICKUPS);
-const ROOF_KINDS = new Set(['house', 'building', 'tower', 'pier', 'containers', 'quay', 'breakwater']);
+const ROOF_KINDS = new Set(['house', 'building', 'tower', 'pier', 'containers', 'warehouse']);
 
 const BOX = new THREE.BoxGeometry(1, 1, 1);
 const CYL = new THREE.CylinderGeometry(1, 1, 1, 10);

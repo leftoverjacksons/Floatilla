@@ -21,6 +21,7 @@ import { Fx } from './fx.js';
 import { RadialMenu } from './radial.js';
 import { loadModels } from './models.js';
 import { Landmarks, LANDMARK_RESERVED } from './landmarks.js';
+import { findSpot, waterInfo } from './terrain.js';
 import { LAYER_NO_REFLECT } from './tiles.js';
 import { readSave, writeSave, restore, consumeLoadFlag, requestLoadOnReload } from './save.js';
 
@@ -220,7 +221,10 @@ class Game {
     // A tired 10 m cruising sloop: room to grow into, a weak auxiliary engine and a hull that needs work.
     const d = randomDesign(rng, 'sailboat');
     Object.assign(d, { length: 10, beam: 3.3, draft: 1.1, freeboard: 0.95, engine: 8, name: 'Little Ark', hullColor: 0xe8e2d0, trimColor: 0x1f3f6b, clothColor: 0xe8dcc0 });
-    const boat = new Boat(d, { x: 12, z: 70, heading: Math.PI, role: 'player', flagColor: 0xff7a1a, hpFrac: 0.55 });
+    // start on the bay just off the river mouth, facing the town
+    const start = findSpot(-40, -150, -30, -1.5, 400, (x, z) => { const wi = waterInfo(x, z); return wi.kind === 'bay' && wi.d < -25; });
+    this.startPos = start;
+    const boat = new Boat(d, { x: start.x, z: start.z, heading: Math.PI, role: 'player', flagColor: 0xff7a1a, hpFrac: 0.55 });
     this.scene.add(boat.root);
     this.world.boats.push(boat);
     this.playerPerson = new Person(rng, { isPlayer: true, name: 'You' });
@@ -238,15 +242,16 @@ class Game {
     this.env.update(0, new THREE.Vector3(), this.camera);
     const level = this.env.level;
     this.water.level = level;
-    w.spawnBoat('rowboat', 70, 150, 'derelict', { hpFrac: 0.3, heading: 2.5 });
+    const rb = findSpot(start.x + 90, start.z + 60, -30, -1.5, 300, (x, z) => waterInfo(x, z).d < -15);
+    w.spawnBoat('rowboat', rb.x, rb.z, 'derelict', { hpFrac: 0.3, heading: 2.5 });
     let best = null, bd = Infinity;
     for (const c of this.city.colliders) {
       if (!['house', 'building'].includes(c.kind) || c.roof.top < level + 1 || c.roof.top > level + 10) continue;
-      const d = Math.hypot((c.minx + c.maxx) / 2 - 12, (c.minz + c.maxz) / 2 - 70);
+      const d = Math.hypot((c.minx + c.maxx) / 2 - start.x, (c.minz + c.maxz) / 2 - start.z);
       if (d > 120 && d < bd) { bd = d; best = c; }
     }
     if (best) w.spawnSurvivorGroup(best, { people: 1, animal: 'cat' });
-    for (let i = 0; i < 3; i++) w.spawnPickup(12 + (rng() - 0.5) * 80, 110 + rng() * 60);
+    for (let i = 0; i < 3; i++) { const pk = findSpot(start.x + (rng() - 0.5) * 120, start.z + 40 + rng() * 60, -30, -1, 120); w.spawnPickup(pk.x, pk.z); }
   }
 
   warnOnce(m) {
@@ -558,6 +563,7 @@ class Game {
     this.water.update(dt, env.level, this.camera.position);
     this.water.simulate();
     this.floodUniforms.uLevel.value = env.level;
+    this.city.currentLevel = env.level; // bridges become barriers as the water nears their underside
     this.floodUniforms.uNight.value = env.night;
     this.floodUniforms.uPower.value = clamp(1 - env.elapsedDays / 6, 0, 1) * 0.85 + 0.15;
 

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { groundHeight } from './terrain.js';
+import { groundHeight, groundSlope, waterInfo, findSpot } from './terrain.js';
 import { patchFloodMaterial } from './shaders.js';
 import { buildHullGeometry } from './boat.js';
 import { rectDistance } from './city.js';
@@ -7,12 +7,22 @@ import { floodLevel } from './environment.js';
 import { mulberry32, pick, rand } from './util.js';
 
 // Plots the procedural city must leave empty.
-export const LANDMARK_RESERVED = [
-  { minx: -335, maxx: -265, minz: -205, maxz: -125 }, // church
-  { minx: -725, maxx: -555, minz: -400, maxz: -260 }, // stadium
-  { minx: 585, maxx: 655, minz: -635, maxz: -565 },   // radio station
-  { minx: -485, maxx: -415, minz: 95, maxz: 160 },    // funfair pier
-];
+// Sites are found on the terrain (heights chosen so each landmark opens at the right flood level).
+const flatAround = (r, tol) => (x, z) => { for (const [dx, dz] of [[r, 0], [-r, 0], [0, r], [0, -r]]) if (Math.abs(groundHeight(x + dx, z + dz) - groundHeight(x, z)) > tol) return false; return true; };
+export const SITES = {
+  // aground in the channel just inside the mouth, east of centre so a passage stays open
+  ship: (() => { const p = findSpot(120, 820, -40, -9, 300, (x, z) => waterInfo(x, z).kind === 'channel' && waterInfo(x, z).d < -60); return { x: p.x, z: p.z }; })(),
+  // a pier on the bay's north shore, east of the river mouth
+  funfair: findSpot(380, -130, -5, 0.5, 450, (x, z) => { const w = waterInfo(x, z); return w.kind !== 'river' && w.d > -30 && w.d < -8; }),
+  // old town, low enough that boats reach its door from the start (ground ≤ ~2.8 m, flood 4 m)
+  church: findSpot(-520, -420, 1.4, 2.7, 500, (x, z) => groundSlope(x, z) < 0.08 && flatAround(18, 1.2)(x, z)),
+  // flat ground that floods mid-game
+  stadium: findSpot(-60, -640, 6.0, 8.0, 900, (x, z) => { let lo = 99; for (const [dx, dz] of [[0, 0], [60, 0], [-60, 0], [0, 60], [0, -60], [42, 42], [-42, 42], [42, -42], [-42, -42]]) lo = Math.min(lo, groundHeight(x + dx, z + dz)); return lo > 5.6; }),
+  // a hill that only becomes reachable later
+  radio: findSpot(820, -780, 9.5, 10.8, 700, (x, z) => groundSlope(x, z) < 0.12),
+};
+const R = (p, rx, rz) => ({ minx: p.x - rx, maxx: p.x + rx, minz: p.z - rz, maxz: p.z + rz });
+export const LANDMARK_RESERVED = [R(SITES.church, 40, 45), R(SITES.stadium, 95, 80), R(SITES.radio, 35, 35), R(SITES.funfair, 40, 40)];
 
 const NOTES = {
   lighthouse: {
@@ -91,18 +101,19 @@ export class Landmarks {
     // Geometry already exists in the city; add the keeper and the story.
     const p = this.city.lighthousePos;
     const c = this.city.colliders.find((k) => k.kind === 'lighthouse');
-    c.roof = { minx: p.x - 3, maxx: p.x + 3, minz: p.z - 3, maxz: p.z + 3, top: 21.6 };
-    this.add({ id: 'lighthouse', name: 'Breakwater Lighthouse', x: p.x, z: p.z, range: 1400,
-      reach: { minx: p.x - 10, maxx: p.x + 10, minz: p.z - 10, maxz: p.z + 10 }, reachLevel: null,
-      blurb: 'the lighthouse at the end of the breakwater. Its lamp is still lit.',
+    // the keeper waves from the gallery; boats can hail from the deeper water off the headland
+    c.roof = { minx: p.x - 24, maxx: p.x + 24, minz: p.z - 24, maxz: p.z + 24, top: p.y + 21.6 };
+    this.add({ id: 'lighthouse', name: 'Headland Lighthouse', x: p.x, z: p.z, range: 1400,
+      reach: { minx: p.x - 30, maxx: p.x + 30, minz: p.z - 30, maxz: p.z + 30 }, reachLevel: null,
+      blurb: 'the lighthouse on the east headland at the mouth of the bay. Its lamp is still lit.',
       loot: { fuel: 8, food: 4, cloth: 3, wood: 4 }, group: { c, people: 1, animal: 'cat' } });
   }
 
   buildShip() {
-    const L = 150, B = 24, cx = 330, cz = 192, y0 = -2.6;
+    const L = 150, B = 24, cx = SITES.ship.x, cz = SITES.ship.z, y0 = -2.6, yaw = 0.14;
     const d = { length: L, beam: B, draft: 9, freeboard: 11, bowSharp: 0.75, vee: 0.25, n: 5, sheer: 2, sternFull: 0.95,
       hullColor: 0x2a3a4c, trimColor: 0xd8d8d0, bottomColor: 0x8a2a22 };
-    const g = new THREE.Group(); g.position.set(cx, y0, cz); g.rotation.set(0.0, Math.PI / 2, 0.045); this.scene.add(g);
+    const g = new THREE.Group(); g.position.set(cx, y0, cz); g.rotation.set(0.0, yaw, 0.045); this.scene.add(g);
     const { geo } = buildHullGeometry(d);
     const hm = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7, metalness: 0.2, side: THREE.DoubleSide });
     patchFloodMaterial(hm, this.uniforms, false);
@@ -130,16 +141,17 @@ export class Landmarks {
     const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.4, 8, 6), new THREE.MeshStandardMaterial({ color: 0xff3020, emissive: 0xff2010, emissiveIntensity: 0 }));
     lamp.position.set(0, deckY + 23, bz - 7); g.add(lamp); this.blinkers.push(lamp.material);
     const top = y0 + deckY + 0.4;
-    const crew = { minx: cx - L * 0.37 - 4, maxx: cx - L * 0.37 + 14, minz: cz - B / 2, maxz: cz + B / 2, top };
-    const c = this.city.addCollider(cx - L / 2, cx + L / 2, cz - B / 2, cz + B / 2, top, 'landmark', crew);
+    const crewX = cx + Math.sin(yaw) * (-L * 0.37 + 5), crewZ = cz + Math.cos(yaw) * (-L * 0.37 + 5);
+    const crew = { minx: crewX - B / 2, maxx: crewX + B / 2, minz: crewZ - 9, maxz: crewZ + 9, top };
+    const c = this.city.addOBB(cx, cz, B / 2, L / 2, yaw, top, 'landmark', crew);
     this.add({ id: 'ship', name: 'MV Kestrel Bay (aground)', x: cx, z: cz, range: 1500,
-      reach: { minx: cx - L / 2, maxx: cx + L / 2, minz: cz - B / 2, maxz: cz + B / 2 }, reachLevel: null,
+      reach: { minx: c.minx, maxx: c.maxx, minz: c.minz, maxz: c.maxz }, reachLevel: null,
       blurb: 'a container ship aground on the bar, listing gently.',
       loot: { scrap: 18, parts: 6, fuel: 15, food: 8, water: 10, cloth: 4 }, group: { c, people: 2, animal: false } });
   }
 
   buildFunfair() {
-    const cx = -450, cz = 125;
+    const cx = SITES.funfair.x, cz = SITES.funfair.z;
     const g = new THREE.Group(); this.scene.add(g);
     // pier platform on piles
     this.solid(g, 0x6b5640, cx - 25, cx + 25, -6, 3, cz - 25, cz + 25);
@@ -179,7 +191,7 @@ export class Landmarks {
   }
 
   buildChurch() {
-    const cx = -300, cz = -165;
+    const cx = SITES.church.x, cz = SITES.church.z;
     const gr = this.minGround(cx, cz, 20) - 0.6;
     const g = new THREE.Group(); this.scene.add(g);
     const stone = 0xb9b2a2;
@@ -216,7 +228,7 @@ export class Landmarks {
   }
 
   buildStadium() {
-    const cx = -640, cz = -330, rx = 72, rz = 56;
+    const cx = SITES.stadium.x, cz = SITES.stadium.z, rx = 72, rz = 56;
     const gr = this.minGround(cx, cz, 60) - 0.6;
     const g = new THREE.Group(); this.scene.add(g);
     // pitch
@@ -264,7 +276,7 @@ export class Landmarks {
   }
 
   buildRadio() {
-    const cx = 620, cz = -600;
+    const cx = SITES.radio.x, cz = SITES.radio.z;
     const gr = this.minGround(cx, cz, 12) - 0.4;
     const g = new THREE.Group(); this.scene.add(g);
     this.solid(g, 0xd8d0c0, cx - 4, cx + 4, gr, gr + 3.6, cz - 3, cz + 3);

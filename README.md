@@ -45,6 +45,8 @@ Open the printed URL. Quality can be switched in-game from the action wheel (Low
 
 ## Systems
 
+- **Setting.** A natural, enclosed bay with an irregular coastline, three islands and a narrow mouth to the open sea between two headlands. A meandering river runs down a valley through the town, and a marshy creek comes in from the east; both are navigable well inland. The town grows along roads: riverbank roads, a coast road and lanes climbing the hills. Downtown towers stand at the river mouth, an old town of pitched-roof houses climbs the slopes, and there are warehouses and cranes on the creek quay, piers along the waterfront, and bridges that become barriers as the water nears their decks and then sink.
+
 - **Start.** You, a dog, and a tired 10 m sloop (55% hull, 8 hp auxiliary, one mast, 4 deck slots, 6 berths). Everything else has to be found or built.
 
 - **Pacing.** A game day lasts 20 real minutes. The game opens with the low harbor district already under about 4 m of water, then rises only a few centimetres per hour at first; it reaches about 75 m after roughly two in-game months. Survivors, supplies and derelict boats are sparse and spaced out by timers, derelicts are badly damaged (sluggish and waterlogged until repaired), and every repeat of a module on the same boat costs 1.7× the previous one.
