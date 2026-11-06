@@ -18,6 +18,7 @@ import { UI } from './ui.js';
 import { CameraController } from './camera.js';
 import { Audio } from './audio.js';
 import { Fx } from './fx.js';
+import { WakeSim } from './wake.js';
 import { RadialMenu } from './radial.js';
 import { loadModels } from './models.js';
 import { Landmarks, LANDMARK_RESERVED } from './landmarks.js';
@@ -59,6 +60,10 @@ class Game {
     buildTerrain(this.scene, this.floodUniforms, this.city);
     this.water = new Water(this.scene, this.floorMap);
     this.water.initGPU(renderer);
+    this.wake = new WakeSim(renderer, this.water.uniforms.uFloor.value, this.water.uniforms.uFloorRect.value);
+    this.water.uniforms.uWake.value = this.wake.texture;
+    this.water.uniforms.uWakeOrigin.value = this.wake.origin;
+    this.water.uniforms.uWakeOn.value = this.wake.ok ? 1 : 0;
     this.env = new Environment(this.scene, renderer, this.rng);
     this.fx = new Fx(this.scene);
     this.applyQuality(this.quality, true);
@@ -73,7 +78,7 @@ class Game {
     this.keys = new Set();
 
     this.ctx = {
-      water: this.water, env: this.env, city: this.city, floorMap: this.floorMap, wind: this.wind, fx: this.fx,
+      water: this.water, env: this.env, city: this.city, floorMap: this.floorMap, wind: this.wind, fx: this.fx, wake: this.wake,
       fuel: (b) => (b && !b.fleet ? 999 : this.fleet.inv.fuel),
       useFuel: (n, b) => { if (!b || b.fleet) this.fleet.inv.fuel = Math.max(0, this.fleet.inv.fuel - n); },
       warn: (m) => this.warnOnce(m),
@@ -81,6 +86,7 @@ class Game {
       canRepair: true,
       onImpact: (b, v) => { if (b === this.fleet.player) { this.audio.thud(v); this.camCtl.shake = Math.min(1, v * 0.12); } },
       onSinking: (b) => this.onSinking(b),
+      onSlam: (b, e) => { if (b === this.fleet.player) { this.camCtl.shake = Math.max(this.camCtl.shake || 0, e * 0.25); if (this.audio.splash) this.audio.splash(e); } },
     };
 
     const save = consumeLoadFlag() ? readSave() : null;
@@ -592,6 +598,15 @@ class Game {
       // idle title-screen orbit
       this.camCtl.yaw += rawDt * 0.05; this.camCtl.update(rawDt, f.player, this.water);
       f.player.update(0.0001, this.ctx);
+    }
+    // hulls press on the wake field around the focus
+    if (this.wake.ok) {
+      for (const b of this.world.boats) {
+        if (b.sunk || !this.wake.covers(b.x, b.z, -20)) continue;
+        const d = b.design;
+        this.wake.addBoat(b.x, b.z, b.heading, d.length * 0.5, d.beam * 0.5, Math.min(1.2, d.draft * 0.45 + 0.1), Math.hypot(b.vx, b.vz));
+      }
+      this.wake.update(dt, focus, env.level);
     }
     this.fx.update(dt, this.water, 0.3 + 0.7 * (env.lightLevel ?? 1));
     this.city.update(dt, env.night, performance.now() / 1000);

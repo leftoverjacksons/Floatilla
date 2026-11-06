@@ -58,5 +58,16 @@ export class Audio {
   }
   blip(f = 600) { this.tone(f, 0.12, 'triangle', 0.08); }
   chime() { this.tone(523, 0.4, 'sine', 0.1); this.tone(659, 0.4, 'sine', 0.1, 0.12); this.tone(784, 0.6, 'sine', 0.1, 0.24); }
+  /** Bow slam: a short broadband crash of water over a low hull thump. */
+  splash(e) {
+    if (!this.ctx) return;
+    const ctx = this.ctx, t = ctx.currentTime, src = ctx.createBufferSource();
+    src.buffer = this.noiseBuf; src.playbackRate.value = 0.9 + Math.random() * 0.3;
+    const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 900 + Math.random() * 500; f.Q.value = 0.5;
+    const g = ctx.createGain(), v = Math.min(0.5, 0.08 + e * 0.35);
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(v, t + 0.02); g.gain.exponentialRampToValueAtTime(0.001, t + 0.5 + e * 0.6);
+    src.connect(f).connect(g).connect(this.master); src.start(t, Math.random()); src.stop(t + 1.3);
+    this.tone(55 + Math.random() * 15, 0.25, 'sine', Math.min(0.3, e * 0.25));
+  }
   thud(v) { this.tone(70 + Math.random() * 30, 0.35, 'sine', Math.min(0.4, v * 0.06)); }
 }

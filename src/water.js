@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { smoothstep } from './util.js';
+import { WAKE_N, WAKE_CELL } from './wake.js';
 import { OceanSpectrum, OceanCPU, OceanGPU, CASCADES, OCEAN_N, TIME_WRAP } from './ocean.js';
 
 // Camera-centred surface: dense near the camera (~0.35 m), coarse far out (~25 m).
@@ -43,6 +44,7 @@ export class Water {
       uSSS: { value: new THREE.Color(0.1, 0.42, 0.38) },
       uRing: { value: 0 },
       uRefl: { value: null }, uReflMatrix: { value: new THREE.Matrix4() }, uReflOn: { value: 0 },
+      uWake: { value: null }, uWakeOrigin: { value: new THREE.Vector2() }, uWakeOn: { value: 0 },
       ...THREE.UniformsLib.fog,
     };
     const matNear = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG, transparent: true, fog: true, depthWrite: true });
@@ -219,6 +221,18 @@ uniform vec2 uCenter;
 uniform vec3 uL;
 uniform sampler2D uFloor, uDisp0, uDisp1, uDisp2, uDer0, uDer1, uDer2;
 uniform vec4 uFloorRect;
+uniform sampler2D uWake; uniform vec2 uWakeOrigin; uniform float uWakeOn;
+// wake field (height, prev, foam, hull pressure), bilinear by hand (float textures may not filter)
+vec4 wakeAt(vec2 w){
+  vec2 g = (w - uWakeOrigin) / ${WAKE_CELL.toFixed(3)} - 0.5;
+  vec2 f = fract(g); ivec2 i = ivec2(floor(g));
+  ivec2 lo = ivec2(0), hi = ivec2(${WAKE_N - 1});
+  vec4 a = texelFetch(uWake, clamp(i, lo, hi), 0), b = texelFetch(uWake, clamp(i + ivec2(1, 0), lo, hi), 0);
+  vec4 c = texelFetch(uWake, clamp(i + ivec2(0, 1), lo, hi), 0), d = texelFetch(uWake, clamp(i + ivec2(1, 1), lo, hi), 0);
+  vec2 e = min(g + 0.5, ${WAKE_N}.0 - g - 0.5);
+  float fade = smoothstep(2.0, 24.0, min(e.x, e.y));
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y) * fade;
+}
 float oceanAtten(vec2 p0, float depth){
   return (1.0 - smoothstep(${FADE0.toFixed(1)}, ${FADE1.toFixed(1)}, length(p0 - uCenter))) * (0.25 + 0.75 * smoothstep(0.5, 10.0, depth));
 }
@@ -244,7 +258,8 @@ void main(){
     disp += textureLod(uDisp1, p0 / uL.y + uHalfTexel, lod1).xyz;
     disp *= a;
   }
-  wp.x += disp.x; wp.z += disp.z; wp.y = uLevel + disp.y;
+  float wk = uWakeOn > 0.5 ? wakeAt(p0).r : 0.0;
+  wp.x += disp.x; wp.z += disp.z; wp.y = uLevel + disp.y + wk;
   vWorld = wp.xyz; vP0 = p0; vAtten = a; vDepth = depth; vHeight = disp.y;
   vec4 mvPosition = viewMatrix * wp;
   gl_Position = projectionMatrix * mvPosition;
@@ -269,10 +284,13 @@ void main(){
 
   // Slopes and Jacobian from all three cascades (mipmapping filters distant detail).
   float sx = 0.0, sz = 0.0, jxx = 0.0, jzz = 0.0, jxz = 0.0;
+  // boat wakes: the turbulent trail damps the finest ripples (wakes read as smooth "slicks")
+  vec4 wk0 = uWakeOn > 0.5 ? wakeAt(vP0) : vec4(0.0);
+  float slick = smoothstep(0.01, 0.25, wk0.b) * 0.75;
   if (uOceanOn > 0.5) {
     vec4 d0 = texture2D(uDer0, vP0 / uL.x + uHalfTexel), d1 = texture2D(uDer1, vP0 / uL.y + uHalfTexel), d2 = texture2D(uDer2, vP0 / uL.z + uHalfTexel);
     float x0 = texture2D(uDisp0, vP0 / uL.x + uHalfTexel).w, x1 = texture2D(uDisp1, vP0 / uL.y + uHalfTexel).w, x2 = texture2D(uDisp2, vP0 / uL.z + uHalfTexel).w;
-    float a = vAtten, ar = mix(0.55, 1.0, vAtten); // ripples persist a little over shallows
+    float a = vAtten, ar = mix(0.55, 1.0, vAtten) * (1.0 - slick); // ripples persist a little over shallows
     sx = (d0.x + d1.x) * a + d2.x * ar; sz = (d0.y + d1.y) * a + d2.y * ar;
     jxx = (d0.z + d1.z) * a + d2.z * ar; jzz = (d0.w + d1.w) * a + d2.w * ar; jxz = (x0 + x1) * a + x2 * ar;
   }
@@ -287,6 +305,16 @@ void main(){
   vec3 n = normalize(vec3(-sx / max(1.0 + jxx, 0.2), 1.0, -sz / max(1.0 + jzz, 0.2)) + vec3(rr * 0.6, 0.0, rr * 0.4));
   n = normalize(mix(n, vec3(0.0, 1.0, 0.0), smoothstep(400.0, 3000.0, camDist) * 0.5));
   float J = (1.0 + jxx) * (1.0 + jzz) - jxz * jxz;
+  // boat wakes: slopes from the wake field, foam it carries
+  float wakeFoam = 0.0;
+  if (uWakeOn > 0.5) {
+    const float E = ${(WAKE_CELL * 0.75).toFixed(3)};
+    vec4 w0 = wk0;
+    float wx = (wakeAt(vP0 + vec2(E, 0.0)).r - wakeAt(vP0 - vec2(E, 0.0)).r) / (2.0 * E);
+    float wz = (wakeAt(vP0 + vec2(0.0, E)).r - wakeAt(vP0 - vec2(0.0, E)).r) / (2.0 * E);
+    n = normalize(n + vec3(-wx, 0.0, -wz));
+    wakeFoam = w0.b;
+  }
 
   vec3 V = normalize(cameraPosition - vWorld);
   float ndv = max(dot(n, V), 0.0);
@@ -327,7 +355,13 @@ void main(){
   float fn = vnoise(vP0 * 0.9 + wob) * 0.6 + vnoise(vP0 * 3.1 - wob * 1.3 + 5.0) * 0.4;
   float breaking = smoothstep(0.42, -0.1, J) * vAtten; // only the steepest folds whiten
   float shore = (1.0 - smoothstep(0.0, 1.2, vDepth)) * step(-0.6, vDepth);
-  float foam = clamp(breaking * smoothstep(0.25, 0.75, fn) * 1.6 + shore * smoothstep(0.35, 0.8, fn) * 0.9, 0.0, 1.0);
+  // wake foam: dense and creamy where fresh, breaking into lace and streaks as it thins out
+  float wf = clamp(wakeFoam, 0.0, 1.2);
+  float lace = vnoise(vP0 * 1.7 + 3.0) * 0.55 + vnoise(vP0 * 5.3 - 2.0) * 0.45;
+  float bub = vnoise(vP0 * 11.0 + 1.7);
+  float th = clamp(1.0 - wf * 1.3, 0.0, 1.0) * 0.9;           // thinner foam → fewer, smaller patches
+  float wakeF = smoothstep(th, th + 0.18, lace * 0.85 + bub * 0.15) * min(1.0, wf * 2.5) * 0.9;
+  float foam = clamp(breaking * smoothstep(0.25, 0.75, fn) * 1.6 + shore * smoothstep(0.35, 0.8, fn) * 0.9 + wakeF, 0.0, 1.0);
   foam *= 1.0 - smoothstep(600.0, 1400.0, camDist) * 0.7;
   col = mix(col, vec3(0.86, 0.9, 0.9) * (0.35 + 0.65 * uLight), foam * 0.85);
   col += vec3(0.6, 0.65, 0.8) * uFlash;

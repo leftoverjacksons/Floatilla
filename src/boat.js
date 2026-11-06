@@ -917,16 +917,44 @@ export class Boat {
     this.updateVisuals(dt, ctx, u, alpha, W, lx, lz);
     this.updatePeople(dt, ctx);
 
-    // wake & spray
+    // Bow slamming: the bow plunging into a wave face faster than it can part the water.
+    const bowY = this.y + Math.sin(this.pitch) * L * 0.42;
+    const imm = hb - bowY;                                    // water above the bow's rest line
+    const immRate = this.prevImm === undefined || dt <= 0 ? 0 : (imm - this.prevImm) / dt;
+    this.prevImm = imm; this.slamCool = Math.max(0, (this.slamCool || 0) - dt);
+    const slam = immRate - 0.9 - Math.max(0, -u) * 0.5;       // m/s of plunge beyond what a hull parts quietly
+    if (dt > 0 && slam > 0 && imm > -d.freeboard * 0.6 && this.slamCool <= 0 && Math.abs(u) > 0.8) {
+      this.slamCool = 0.35;
+      const e = Math.min(1, slam / 3) * Math.min(1, Math.abs(u) / 5 + 0.3) * Math.min(1.6, B / 3);
+      const bx = this.x + fx * L * 0.42, bz = this.z + fz * L * 0.42;
+      if (ctx.wake) ctx.wake.splash(bx, bz, B * 0.45, 0.12 + e * 0.35);
+      if (ctx.fx && ctx.nearCamera(this)) {
+        const n = Math.round(10 + e * 60);
+        for (let i = 0; i < n; i++) {
+          const side = i % 2 ? 1 : -1, out = 1.5 + Math.random() * 4 * (0.5 + e), along = Math.random();
+          const px = bx - fx * L * 0.12 * along + lx * side * B * 0.35, pz = bz - fz * L * 0.12 * along + lz * side * B * 0.35;
+          ctx.fx.emit(px, hb + 0.2, pz,
+            lx * side * out + fx * u * 0.45 + (Math.random() - 0.5), 2.5 + Math.random() * 5 * (0.4 + e), lz * side * out + fz * u * 0.45 + (Math.random() - 0.5),
+            0.7 + Math.random() * 0.8, 0.25 + Math.random() * 0.35 * (0.5 + e), 1);
+        }
+        if (ctx.onSlam) ctx.onSlam(this, e);
+      }
+    }
+
+    // wake & spray (inside the simulated wake field the water itself carries the wake)
     if (ctx.fx && ctx.nearCamera(this)) {
       const sp = Math.abs(u);
-      if (sp > 0.6 && Math.random() < dt * 30) {
+      const simulated = ctx.wake && ctx.wake.covers(this.x, this.z);
+      if (sp > 0.6 && !simulated && Math.random() < dt * 30) {
         const sx = this.x - fx * L * 0.5, sz = this.z - fz * L * 0.5;
         ctx.fx.emit(sx + (Math.random() - 0.5) * B * 0.6, hc, sz + (Math.random() - 0.5) * B * 0.6, -fx * 0.3 + (Math.random() - 0.5), 0, -fz * 0.3 + (Math.random() - 0.5), 4 + sp * 0.5, B * 0.5 + sp * 0.15, 0);
         for (const s of [1, -1]) ctx.fx.emit(this.x + fx * L * 0.35 + lx * B * 0.5 * s, hc, this.z + fz * L * 0.35 + lz * B * 0.5 * s, lx * s * sp * 0.25, 0, lz * s * sp * 0.25, 3, B * 0.25 + sp * 0.06, 0);
       }
       if (sp > 3.5 && Math.random() < dt * (sp - 3) * 4 * (1 + ctx.water.sea)) {
-        ctx.fx.emit(this.x + fx * L * 0.48, hc + 0.3, this.z + fz * L * 0.48, lx * (Math.random() - 0.5) * 3 + fx * sp * 0.4, 1.5 + Math.random() * 2, lz * (Math.random() - 0.5) * 3 + fz * sp * 0.4, 0.9, 0.35, 1);
+        // bow-wave sheet peeling off both shoulders
+        const side = Math.random() < 0.5 ? 1 : -1, out = 1 + sp * 0.35 * Math.random();
+        ctx.fx.emit(this.x + fx * L * 0.4 + lx * side * B * 0.3, hb + 0.15, this.z + fz * L * 0.4 + lz * side * B * 0.3,
+          lx * side * out + fx * sp * 0.35, 1.2 + Math.random() * 1.8, lz * side * out + fz * sp * 0.35, 0.8, 0.2 + Math.random() * 0.2, 1);
       }
       if (this.engineOn && this.design.kind === 'tug' && Math.random() < dt * 6) {
         const p = this.root.localToWorld(this.smokePos ? this.smokePos.clone() : new THREE.Vector3(0, this.deckY + 4, this.L * 0.08 - 2.2));
