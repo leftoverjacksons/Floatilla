@@ -92,7 +92,7 @@ export class Fx {
       this.pos[o] += this.vel[o] * dt; this.pos[o + 2] += this.vel[o + 2] * dt;
       if (k === 1) { this.vel[o + 1] -= 9.8 * dt; this.pos[o + 1] += this.vel[o + 1] * dt; }
       else if (k === 2) { this.pos[o + 1] += this.vel[o + 1] * dt; }
-      else if ((i & 7) === (this._tick & 7)) this.pos[o + 1] = water.heightAt(this.pos[o], this.pos[o + 2]) + 0.06;
+      else if ((i & 7) === (this._tick & 7)) this.pos[o + 1] = water.heightFast(this.pos[o], this.pos[o + 2]) + 0.06;
       this.vel[o] *= 0.97; this.vel[o + 2] *= 0.97;
       a[i] = k === 2 ? (1 - t) * 0.35 : (1 - t) * (k === 1 ? 0.8 : 0.7);
       s[i] = this.size[i] * (k === 0 ? 0.6 + t * 1.8 : k === 2 ? 1 + t * 3 : 1);
@@ -107,7 +107,7 @@ export class Fx {
       d.life[i] -= dt;
       const t = 1 - d.life[i] / d.max[i];
       d.x[i] += d.vx[i] * dt; d.z[i] += d.vz[i] * dt; d.vx[i] *= 0.985; d.vz[i] *= 0.985;
-      if (((i + this._tick) & 3) === 0) d.y[i] = water.heightAt(d.x[i], d.z[i]) + 0.04;
+      if (((i + this._tick) & 3) === 0) d.y[i] = water.heightFast(d.x[i], d.z[i]) + 0.04;
       const sc = d.size[i] * (0.5 + t * 1.6);
       this._p.set(d.x[i], d.y[i], d.z[i]); this._q.setFromAxisAngle(this._up, d.rot[i] + t * 0.3); this._s.set(sc, 1, sc);
       m.compose(this._p, this._q, this._s); this.decals.setMatrixAt(i, m);

@@ -56,6 +56,7 @@ class Game {
     this.landmarks = new Landmarks(this, this.scene, this.city, this.floorMap, this.floodUniforms);
     buildTerrain(this.scene, this.floodUniforms, this.city);
     this.water = new Water(this.scene, this.floorMap);
+    this.water.initGPU(renderer);
     this.env = new Environment(this.scene, renderer, this.rng);
     this.fx = new Fx(this.scene);
     this.applyQuality(this.quality, true);
@@ -544,7 +545,8 @@ class Game {
     if (dt > 0) this.playerControls(dt);
     env.update(dt, focus, this.camera);
     this.wind.set(Math.cos(env.windAngle), Math.sin(env.windAngle)).multiplyScalar(env.windSpeed);
-    this.water.setSeaState(0.35 + env.windSpeed / 7, env.windAngle, env.windSpeed, env.rainAmt);
+    // the ocean follows the sustained weather wind, not momentary gusts
+    this.water.setSeaState(0.35 + env.cur.wind / 7, env.windAngle, env.cur.wind, env.rainAmt);
     const u = this.water.uniforms;
     u.uSunDir.value.copy(env.sunDir.y > -0.05 ? env.sunDir : env.moonDir);
     u.uSunColor.value.copy(env.sunDir.y > -0.05 ? env.sunColor : new THREE.Color(0.5, 0.55, 0.7));
@@ -553,6 +555,7 @@ class Game {
     u.uLight.value = env.lightLevel ?? 1; u.uRain.value = env.rainAmt; u.uFlash.value = env.flash;
     u.uWind.value.set(this.wind.x, this.wind.y).multiplyScalar(0.1);
     this.water.update(dt, env.level, this.camera.position);
+    this.water.simulate();
     this.floodUniforms.uLevel.value = env.level;
     this.floodUniforms.uNight.value = env.night;
     this.floodUniforms.uPower.value = clamp(1 - env.elapsedDays / 6, 0, 1) * 0.85 + 0.15;

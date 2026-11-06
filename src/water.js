@@ -1,49 +1,34 @@
 import * as THREE from 'three';
 import { smoothstep } from './util.js';
+import { OceanSpectrum, OceanCPU, OceanGPU, CASCADES, OCEAN_N, TIME_WRAP } from './ocean.js';
 
-// Gerstner wave set. The first NDISP waves displace geometry (and are what
-// boats feel); the rest only perturb shading normals.
-const G = 9.81;
-const BASE = [
-  { L: 74, A: 0.30, a: 0.0 },
-  { L: 41, A: 0.17, a: 0.55 },
-  { L: 23, A: 0.10, a: -0.45 },
-  { L: 13, A: 0.055, a: 0.95 },
-  { L: 7.3, A: 0.03, a: -0.8 },
-  { L: 4.4, A: 0.016, a: 0.3 },
-  { L: 2.7, A: 0.008, a: -1.2 },
-];
-const NDISP = 3; // longest three waves displace geometry (shortest 23 m: >5 vertices per wavelength)
-// Capillary/short gravity ripples for shading only: fixed world directions (golden-angle spread),
-// geometric wavelengths 0.35–2.3 m, deep-water dispersion with surface tension.
-const RIPPLES = Array.from({ length: 12 }, (_, i) => {
-  const lambda = 0.35 * Math.pow(1.185, i);
-  const k = (2 * Math.PI) / lambda;
-  const angle = i * 2.39996 + 0.7;
-  return { lambda, k, angle, dx: Math.cos(angle), dz: Math.sin(angle), omega: Math.sqrt(9.81 * k + 7.4e-5 * k * k * k), phase: (i * 1.618) % (2 * Math.PI), amp: 0.045 / k };
-});
-const Q = 1.0;
-const SWELL = -Math.PI / 2; // swell travels north (-z), in from the open sea
-const FADE0 = 330, FADE1 = 440;
+// Camera-centred surface: dense near the camera (~0.35 m), coarse far out (~25 m).
+const GRID_H = 128, GRID_R = 1100, GRID_A = 0.04, GRID_P = 3;
+const SNAP = 2;            // grid follows the camera in 2 m steps
+const FADE0 = 650, FADE1 = 1000; // displacement fades out before the far ring
+const RING_R = 1066;
 
 export class Water {
   constructor(scene, floorMap) {
     this.floorMap = floorMap;
     this.time = 0; this.level = 0; this.sea = 1;
     this.center = new THREE.Vector2();
-    this.waves = BASE.map((w) => {
-      const k = (2 * Math.PI) / w.L;
-      const ang = SWELL + w.a;
-      return { k, omega: Math.sqrt(G * k), dx: Math.cos(ang), dz: Math.sin(ang), A0: w.A, A: w.A };
-    });
+    this.spectrum = new OceanSpectrum(OCEAN_N);
+    this.spectrum.build(5, -Math.PI / 2 + 0.6);
+    this.cpu = new OceanCPU(this.spectrum);
+    this.lambda = this.spectrum.lambda;
+    this.lastBuild = { V: 5, a: -Math.PI / 2 + 0.6, t: -99 };
     const rect = floorMap.rect;
     this.uniforms = {
-      uTime: { value: 0 }, uLevel: { value: 0 }, uSea: { value: 1 },
+      uTime: { value: 0 }, uLevel: { value: 0 }, uSea: { value: 1 }, uHs: { value: 0.5 },
       uCenter: { value: this.center },
-      uWaves: { value: this.waves.map(() => new THREE.Vector4()) },
-      uOmega: { value: this.waves.map((w) => w.omega) },
       uFloor: { value: floorMap.makeTexture() },
       uFloorRect: { value: new THREE.Vector4(rect.minx, rect.minz, rect.size, rect.size) },
+      uDisp0: { value: null }, uDisp1: { value: null }, uDisp2: { value: null },
+      uDer0: { value: null }, uDer1: { value: null }, uDer2: { value: null },
+      uL: { value: new THREE.Vector3(CASCADES[0].L, CASCADES[1].L, CASCADES[2].L) },
+      uHalfTexel: { value: 0.5 / OCEAN_N },
+      uOceanOn: { value: 0 },
       uSunDir: { value: new THREE.Vector3(0, 1, 0) },
       uSunColor: { value: new THREE.Color(1, 1, 1) },
       uSunInt: { value: 1 },
@@ -52,58 +37,78 @@ export class Water {
       uLight: { value: 1 },
       uRain: { value: 0 }, uFlash: { value: 0 },
       uWind: { value: new THREE.Vector2(1, 0) },
-      uDeep: { value: new THREE.Color(0.015, 0.09, 0.13) },
-      uShallow: { value: new THREE.Color(0.08, 0.26, 0.26) },
-      uMurk: { value: new THREE.Color(0.17, 0.17, 0.1) },
+      uDeep: { value: new THREE.Color(0.012, 0.06, 0.085) },
+      uShallow: { value: new THREE.Color(0.07, 0.22, 0.22) },
+      uMurk: { value: new THREE.Color(0.15, 0.15, 0.09) },
+      uSSS: { value: new THREE.Color(0.1, 0.42, 0.38) },
       uRing: { value: 0 },
       uRefl: { value: null }, uReflMatrix: { value: new THREE.Matrix4() }, uReflOn: { value: 0 },
-      uRip: { value: RIPPLES.map(() => new THREE.Vector4()) }, uRipW: { value: RIPPLES.map((r) => r.omega) }, uRipPh: { value: RIPPLES.map((r) => r.phase) },
       ...THREE.UniformsLib.fog,
     };
-    const matNear = new THREE.ShaderMaterial({
-      uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG,
-      transparent: true, fog: true, depthWrite: true,
-    });
+    const matNear = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG, transparent: true, fog: true, depthWrite: true });
     const matFar = matNear.clone();
     matFar.uniforms = { ...this.uniforms, uRing: { value: 1 } };
-
-    const size = 900, seg = 200; // ~4.5 m grid; finer detail comes from the shading ripples
-    const g = new THREE.PlaneGeometry(size, size, seg, seg); g.rotateX(-Math.PI / 2);
-    this.snap = size / seg;
-    this.near = new THREE.Mesh(g, matNear);
-    const rg = new THREE.RingGeometry(442, 9000, 128, 6); rg.rotateX(-Math.PI / 2);
+    this.near = new THREE.Mesh(buildGrid(), matNear);
+    const rg = new THREE.RingGeometry(RING_R, 12000, 128, 8); rg.rotateX(-Math.PI / 2);
+    rg.setAttribute('aSpacing', new THREE.Float32BufferAttribute(new Float32Array(rg.attributes.position.count).fill(60), 1));
     this.far = new THREE.Mesh(rg, matFar);
     for (const m of [this.near, this.far]) { m.frustumCulled = false; m.renderOrder = 1; scene.add(m); }
+    this._d = { x: 0, y: 0, z: 0 };
     this.updateUniforms();
   }
 
+  /** Create the GPU FFT pipeline. Without float render targets the sea falls back to calm, flat shading. */
+  initGPU(renderer) {
+    this.gpu = new OceanGPU(renderer, this.spectrum);
+    if (!this.gpu.ok) { console.warn('FFT ocean unavailable (no float render targets); flat sea fallback'); return; }
+    const u = this.uniforms, cs = this.gpu.cascades;
+    u.uDisp0.value = cs[0].disp.texture; u.uDisp1.value = cs[1].disp.texture; u.uDisp2.value = cs[2].disp.texture;
+    u.uDer0.value = cs[0].deriv.texture; u.uDer1.value = cs[1].deriv.texture; u.uDer2.value = cs[2].deriv.texture;
+    u.uOceanOn.value = 1;
+    this.gpu.uploadSpectrum();
+    this.gpu.initProbe(u.uFloor.value, u.uFloorRect.value, FADE0, FADE1);
+  }
+
+  /**
+   * Sea state follows the slowly-varying weather wind (not gusts). The spectrum is rebuilt only
+   * when the wind has drifted a few percent; amplitudes change, random phases never do, so the
+   * sea never "slides".
+   */
   setSeaState(sea, windAngle = 0, windSpeed = 5, rain = 0) {
-    this.sea = sea;
-    for (const w of this.waves) w.A = w.A0 * sea;
-    // Ripple directions are fixed in world space; only their amplitudes follow the wind.
-    // (Rotating directions would sweep phase across the whole sea and make it appear to slide.)
-    const wf = 0.25 + Math.min(1.5, windSpeed / 9);
-    RIPPLES.forEach((r, i) => {
-      const align = Math.max(0, Math.cos(r.angle - windAngle));
-      const amp = r.amp * wf * (0.3 + 0.7 * align * align) * (1 + rain * (r.lambda < 0.8 ? 1.5 : 0.3));
-      this.uniforms.uRip.value[i].set(r.dx, r.dz, r.k, amp);
-    });
+    this.sea = sea; this.rain = rain;
+    const lb = this.lastBuild;
+    const changed = Math.abs(windSpeed - lb.V) / Math.max(lb.V, 1) > 0.04 || Math.abs(windAngle - lb.a) > 0.06;
+    if (changed && this.time - lb.t > 1.5) {
+      this.spectrum.build(windSpeed, windAngle);
+      this.cpu.select();
+      this.lambda = this.spectrum.lambda;
+      if (this.gpu) this.gpu.uploadSpectrum();
+      this.lastBuild = { V: windSpeed, a: windAngle, t: this.time };
+    }
   }
 
   update(dt, level, focus) {
     this.time += dt;
     this.level = level;
-    const sx = Math.round(focus.x / this.snap) * this.snap, sz = Math.round(focus.z / this.snap) * this.snap;
+    const sx = Math.round(focus.x / SNAP) * SNAP, sz = Math.round(focus.z / SNAP) * SNAP;
     this.near.position.set(sx, 0, sz);
     this.far.position.set(sx, 0, sz);
     this.center.set(sx, sz);
+    this.cpu.setTime(this.time % TIME_WRAP);
     this.updateUniforms();
+  }
+
+  /** Run the GPU wave simulation for this frame (call once per frame before rendering). */
+  simulate() {
+    if (!this.gpu || !this.gpu.ok) return;
+    this.gpu.simulate(this.time % TIME_WRAP, this.lambda);
+    this.gpu.probe(this.center, this.level, this.time);
   }
 
   updateUniforms() {
     const u = this.uniforms;
-    u.uTime.value = this.time; u.uLevel.value = this.level; u.uSea.value = this.sea;
-    this.waves.forEach((w, i) => u.uWaves.value[i].set(w.dx, w.dz, w.k, w.A));
+    u.uTime.value = this.time % TIME_WRAP; u.uLevel.value = this.level; u.uSea.value = this.sea;
+    u.uHs.value = this.spectrum.hs;
   }
 
   attenuation(x, z) {
@@ -112,39 +117,38 @@ export class Water {
     return (1 - smoothstep(FADE0, FADE1, d)) * (0.25 + 0.75 * smoothstep(0.5, 10, depth));
   }
 
-  /** Displacement of the surface point whose rest position is (x, z). */
+  /** Displacement of the surface point whose rest position is (x, z) (swell + chop ≥ 5 m). */
   displace(x, z, out) {
     const a = this.attenuation(x, z);
-    let dx = 0, dy = 0, dz = 0;
-    for (let i = 0; i < NDISP; i++) {
-      const w = this.waves[i];
-      const f = w.k * (w.dx * x + w.dz * z) - w.omega * this.time;
-      const A = w.A * a, c = Math.cos(f);
-      dx += Q * A * w.dx * c; dz += Q * A * w.dz * c; dy += A * Math.sin(f);
-    }
-    out.x = dx; out.y = dy; out.z = dz;
+    this.cpu.displace(x, z, this.lambda, out);
+    out.x *= a; out.y *= a; out.z *= a;
     return out;
   }
 
-  /** Surface height at world (x, z); inverts the horizontal Gerstner shift. */
+  /** Surface height at world (x, z); inverts the horizontal (choppy) displacement. */
   heightAt(x, z) {
-    const d = this._d || (this._d = { x: 0, y: 0, z: 0 });
+    // Near the camera: the exact rendered surface, read back from the GPU (≈1–2 frames old).
+    const ph = this.gpu && this.gpu.ok ? this.gpu.probeHeight(x, z, this.time) : null;
+    if (ph !== null) return this.level + ph;
+    // Farther out: the strongest components of the same spectrum, evaluated on the CPU.
+    const d = this._d;
     let px = x, pz = z;
     for (let it = 0; it < 3; it++) { this.displace(px, pz, d); px = x - d.x; pz = z - d.z; }
     this.displace(px, pz, d);
     return this.level + d.y;
   }
 
+  /** Cheaper height for cosmetic things (foam, flotsam): no choppy inversion. */
+  heightFast(x, z) {
+    const ph = this.gpu && this.gpu.ok ? this.gpu.probeHeight(x, z, this.time) : null;
+    return ph !== null ? this.level + ph : this.level + this.cpu.heightOnly(x, z) * this.attenuation(x, z);
+  }
+
   depthAt(x, z) { return this.level - this.floorMap.floorAt(x, z); }
 
-  /**
-   * Planar reflection: render the scene from the camera mirrored in the plane
-   * y = level, clipped to what lies above the water, into a half-res target.
-   * The water shader projects each fragment through the same mirrored camera.
-   */
+  // ---- planar reflection (unchanged approach) ------------------------------------------
   enableReflections(renderer) {
     const size = renderer.getDrawingBufferSize(new THREE.Vector2());
-    // ~40% of screen resolution is plenty once the waves distort it; no MSAA needed.
     this.reflRT = new THREE.WebGLRenderTarget(Math.max(1, Math.round(size.x * 0.4)), Math.max(1, Math.round(size.y * 0.4)), { type: THREE.HalfFloatType });
     this.reflCam = new THREE.PerspectiveCamera();
     this.clipPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -185,72 +189,94 @@ export class Water {
   }
 }
 
-const VERT = /* glsl */`
-uniform float uTime, uLevel;
+/** Square grid with spacing growing smoothly from the centre; aSpacing drives texture LOD. */
+function buildGrid() {
+  const H = GRID_H, n = 2 * H + 1;
+  const f = (u) => Math.sign(u) * GRID_R * (GRID_A * Math.abs(u) + (1 - GRID_A) * Math.pow(Math.abs(u), GRID_P));
+  const df = (u) => GRID_R * (GRID_A + (1 - GRID_A) * GRID_P * Math.pow(Math.abs(u), GRID_P - 1)) / H;
+  const pos = new Float32Array(n * n * 3), sp = new Float32Array(n * n);
+  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+    const u = (i - H) / H, v = (j - H) / H, k = j * n + i;
+    pos[k * 3] = f(u); pos[k * 3 + 1] = 0; pos[k * 3 + 2] = f(v);
+    sp[k] = Math.max(df(u), df(v));
+  }
+  const idx = new Uint32Array((n - 1) * (n - 1) * 6);
+  let p = 0;
+  for (let j = 0; j < n - 1; j++) for (let i = 0; i < n - 1; i++) {
+    const a = j * n + i, b = a + 1, c = a + n, d = c + 1;
+    idx[p++] = a; idx[p++] = c; idx[p++] = b; idx[p++] = b; idx[p++] = c; idx[p++] = d;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('aSpacing', new THREE.BufferAttribute(sp, 1));
+  g.setIndex(new THREE.BufferAttribute(idx, 1));
+  return g;
+}
+
+const COMMON = /* glsl */`
+uniform float uTime, uLevel, uOceanOn, uHalfTexel;
 uniform vec2 uCenter;
-uniform vec4 uWaves[7];
-uniform float uOmega[7];
-uniform sampler2D uFloor;
+uniform vec3 uL;
+uniform sampler2D uFloor, uDisp0, uDisp1, uDisp2, uDer0, uDer1, uDer2;
 uniform vec4 uFloorRect;
-varying vec3 vWorld; varying vec2 vP0; varying float vAtten; varying float vDepth;
+float oceanAtten(vec2 p0, float depth){
+  return (1.0 - smoothstep(${FADE0.toFixed(1)}, ${FADE1.toFixed(1)}, length(p0 - uCenter))) * (0.25 + 0.75 * smoothstep(0.5, 10.0, depth));
+}
+`;
+
+const VERT = /* glsl */`
+${COMMON}
+attribute float aSpacing;
+varying vec3 vWorld; varying vec2 vP0; varying float vAtten; varying float vDepth; varying float vHeight;
 #include <fog_pars_vertex>
 void main(){
   vec4 wp = modelMatrix * vec4(position, 1.0);
   vec2 p0 = wp.xz;
   float fl = texture2D(uFloor, (p0 - uFloorRect.xy) / uFloorRect.zw).r;
   float depth = uLevel - fl;
-  float d = length(p0 - uCenter);
-  float a = (1.0 - smoothstep(${FADE0.toFixed(1)}, ${FADE1.toFixed(1)}, d)) * (0.25 + 0.75 * smoothstep(0.5, 10.0, depth));
+  float a = oceanAtten(p0, depth);
   vec3 disp = vec3(0.0);
-  for (int i = 0; i < ${NDISP}; i++) {
-    vec4 w = uWaves[i];
-    float f = w.z * dot(w.xy, p0) - uOmega[i] * uTime;
-    float A = w.w * a; float c = cos(f);
-    disp.x += ${Q.toFixed(2)} * A * w.x * c; disp.z += ${Q.toFixed(2)} * A * w.y * c; disp.y += A * sin(f);
+  if (uOceanOn > 0.5) {
+    // pick a mip so each cascade is never sampled finer than the local vertex spacing
+    float lod0 = max(0.0, log2(aSpacing / (uL.x / ${OCEAN_N}.0)));
+    float lod1 = max(0.0, log2(aSpacing / (uL.y / ${OCEAN_N}.0)));
+    disp += textureLod(uDisp0, p0 / uL.x + uHalfTexel, lod0).xyz;
+    disp += textureLod(uDisp1, p0 / uL.y + uHalfTexel, lod1).xyz;
+    disp *= a;
   }
   wp.x += disp.x; wp.z += disp.z; wp.y = uLevel + disp.y;
-  vWorld = wp.xyz; vP0 = p0; vAtten = a; vDepth = depth;
+  vWorld = wp.xyz; vP0 = p0; vAtten = a; vDepth = depth; vHeight = disp.y;
   vec4 mvPosition = viewMatrix * wp;
   gl_Position = projectionMatrix * mvPosition;
   #include <fog_vertex>
 }`;
 
 const FRAG = /* glsl */`
-uniform float uTime, uLevel, uSea, uSunInt, uLight, uRain, uFlash, uRing;
-uniform vec2 uCenter, uWind;
-uniform vec4 uWaves[7];
-uniform float uOmega[7];
-uniform vec3 uSunDir, uSunColor, uSkyColor, uHorizon, uDeep, uShallow, uMurk;
+${COMMON}
+uniform float uSea, uHs, uSunInt, uLight, uRain, uFlash, uRing;
+uniform vec2 uWind;
+uniform vec3 uSunDir, uSunColor, uSkyColor, uHorizon, uDeep, uShallow, uMurk, uSSS;
 uniform sampler2D uRefl; uniform mat4 uReflMatrix; uniform float uReflOn;
-uniform vec4 uRip[12]; uniform float uRipW[12]; uniform float uRipPh[12];
-varying vec3 vWorld; varying vec2 vP0; varying float vAtten; varying float vDepth;
+varying vec3 vWorld; varying vec2 vP0; varying float vAtten; varying float vDepth; varying float vHeight;
 #include <common>
 #include <fog_pars_fragment>
 float h21(vec2 p){ vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); vec2 u = f*f*(3.0-2.0*f);
   return mix(mix(h21(i), h21(i+vec2(1,0)), u.x), mix(h21(i+vec2(0,1)), h21(i+vec2(1,1)), u.x), u.y); }
 void main(){
-  if (uRing < 0.5 && length(vP0 - uCenter) > 443.0) discard;
-  vec3 n = vec3(0.0, 1.0, 0.0);
-  for (int i = 0; i < 7; i++) {
-    vec4 w = uWaves[i];
-    float f = w.z * dot(w.xy, vP0) - uOmega[i] * uTime;
-    float WA = w.z * w.w * vAtten;
-    float c = cos(f);
-    n.x -= w.x * WA * c; n.z -= w.y * WA * c; n.y -= ${Q.toFixed(2)} * WA * sin(f);
-  }
-  // Short ripples: travelling waves with their own speeds and fixed directions, evaluated at the
-  // rest position so they ride the swell's orbital motion. Each fades out before it can alias.
+  if (uRing < 0.5 && length(vP0 - uCenter) > ${(RING_R + 4).toFixed(1)}) discard;
   float camDist = length(cameraPosition - vWorld);
-  vec2 rg = vec2(0.0);
-  for (int i = 0; i < 12; i++) {
-    vec4 r = uRip[i];
-    float fade = clamp(1.0 - camDist * r.z / 950.0, 0.0, 1.0);
-    if (fade <= 0.0) continue;
-    float ph = r.z * dot(r.xy, vP0) - uRipW[i] * uTime + uRipPh[i];
-    rg += r.xy * (r.z * r.w * cos(ph) * fade);
+
+  // Slopes and Jacobian from all three cascades (mipmapping filters distant detail).
+  float sx = 0.0, sz = 0.0, jxx = 0.0, jzz = 0.0, jxz = 0.0;
+  if (uOceanOn > 0.5) {
+    vec4 d0 = texture2D(uDer0, vP0 / uL.x + uHalfTexel), d1 = texture2D(uDer1, vP0 / uL.y + uHalfTexel), d2 = texture2D(uDer2, vP0 / uL.z + uHalfTexel);
+    float x0 = texture2D(uDisp0, vP0 / uL.x + uHalfTexel).w, x1 = texture2D(uDisp1, vP0 / uL.y + uHalfTexel).w, x2 = texture2D(uDisp2, vP0 / uL.z + uHalfTexel).w;
+    float a = vAtten, ar = mix(0.55, 1.0, vAtten); // ripples persist a little over shallows
+    sx = (d0.x + d1.x) * a + d2.x * ar; sz = (d0.y + d1.y) * a + d2.y * ar;
+    jxx = (d0.z + d1.z) * a + d2.z * ar; jzz = (d0.w + d1.w) * a + d2.w * ar; jxz = (x0 + x1) * a + x2 * ar;
   }
-  rg *= (0.6 + 0.4 * vAtten);
+  // rain rings
   float rr = 0.0;
   if (uRain > 0.01) {
     vec2 q = vWorld.xz * 3.5; vec2 id = floor(q); vec2 fq = fract(q) - 0.5;
@@ -258,9 +284,9 @@ void main(){
     float ring = abs(length(fq) - t * 0.4);
     rr = (1.0 - smoothstep(0.0, 0.04, ring)) * (1.0 - t) * step(0.4, h21(id + 0.37)) * uRain * 0.6;
   }
-  n = normalize(n - vec3(rg.x, 0.0, rg.y) + vec3(rr * 0.6, 0.0, rr * 0.4));
-  // soften the remaining detail with distance (stands in for normal-map mipmapping)
-  n = normalize(mix(n, vec3(0.0, 1.0, 0.0), smoothstep(200.0, 1600.0, camDist) * 0.6));
+  vec3 n = normalize(vec3(-sx / max(1.0 + jxx, 0.2), 1.0, -sz / max(1.0 + jzz, 0.2)) + vec3(rr * 0.6, 0.0, rr * 0.4));
+  n = normalize(mix(n, vec3(0.0, 1.0, 0.0), smoothstep(400.0, 3000.0, camDist) * 0.5));
+  float J = (1.0 + jxx) * (1.0 + jzz) - jxz * jxz;
 
   vec3 V = normalize(cameraPosition - vWorld);
   float ndv = max(dot(n, V), 0.0);
@@ -270,38 +296,44 @@ void main(){
   if (uReflOn > 0.5) {
     vec4 rc = uReflMatrix * vec4(vWorld.x, uLevel, vWorld.z, 1.0);
     vec2 ruv = rc.xy / rc.w * 0.5 + 0.5;
-    ruv += n.xz * (0.035 / (1.0 + camDist * 0.004));
+    ruv += n.xz * (0.05 / (1.0 + camDist * 0.004));
     vec3 refl = texture2D(uRefl, clamp(ruv, 0.001, 0.999)).rgb;
     if (any(isnan(refl)) || any(isinf(refl)) || !(abs(refl.r) < 1e5) || !(abs(refl.g) < 1e5) || !(abs(refl.b) < 1e5)) refl = uHorizon;
-    refl = min(refl, vec3(40.0));
-    sky = refl;
+    // rough, wavy water shouldn't be a perfect mirror: blend toward the sky gradient as slopes grow
+    sky = mix(min(refl, vec3(40.0)), sky, clamp(length(vec2(sx, sz)) * 1.5, 0.0, 0.6));
   }
 
+  // body colour: depth, murk of floodwater, light through thin crests
   float depthF = smoothstep(0.0, 14.0, vDepth);
   vec3 wc = mix(uShallow, uDeep, depthF);
-  float murk = smoothstep(150.0, -150.0, vWorld.z) * 0.65;
+  float murk = smoothstep(150.0, -150.0, vWorld.z) * 0.6;
   wc = mix(wc, uMurk, murk * (0.5 + 0.5 * depthF));
   float sunUp = clamp(uSunDir.y * 4.0, 0.0, 1.0);
-  vec3 body = wc * (0.35 + 0.65 * max(dot(n, uSunDir), 0.0) * sunUp) * uLight;
-  float crest = clamp((vWorld.y - uLevel) / max(uSea * 0.6, 0.15), 0.0, 1.5) * vAtten;
-  body += uShallow * 0.35 * crest * sunUp * uLight;
+  vec3 body = wc * (0.3 + 0.7 * max(dot(n, uSunDir), 0.0) * sunUp) * uLight;
+  float crest = clamp(vHeight / max(uHs * 0.5, 0.1), 0.0, 1.5);
+  vec3 sunFlat = normalize(vec3(uSunDir.x, 0.0, uSunDir.z) + 1e-4);
+  float back = pow(max(dot(-V, sunFlat), 0.0), 3.0) * (0.25 + 0.75 * (1.0 - ndv));
+  body += uSSS * (crest * 0.35 + back * crest * 1.2) * (0.25 + 0.75 * sunUp) * uLight;
   vec3 col = mix(body, sky, fres);
 
+  // sun glitter: sharper on calm water, broader in a blow
   vec3 H = normalize(uSunDir + V);
   float nh = max(dot(n, H), 0.0);
-  col += uSunColor * (pow(nh, 350.0) * 5.0 + pow(nh, 40.0) * 0.12) * uSunInt;
+  float shin = mix(600.0, 180.0, clamp(uSea / 3.0, 0.0, 1.0));
+  col += uSunColor * (pow(nh, shin) * 6.0 + pow(nh, 50.0) * 0.1) * uSunInt;
 
+  // foam: breaking crests (Jacobian folds), broken up by noise anchored to the water; shorelines
   vec2 wob = vec2(sin(uTime * 0.11), cos(uTime * 0.083)) * 0.6;
-  float fn = vnoise(vP0 * 0.7 + wob) * vnoise(vP0 * 1.9 - wob * 1.3 + 5.0);
-  float foamCrest = smoothstep(0.65, 1.2, crest) * smoothstep(0.9, 1.8, uSea);
-  float shore = (1.0 - smoothstep(0.0, 1.4, vDepth)) * step(-0.6, vDepth);
-  float foam = clamp((foamCrest + shore * 0.9) * (0.35 + fn * 1.6), 0.0, 1.0);
-  col = mix(col, vec3(0.85, 0.88, 0.88) * uLight, foam * 0.8);
+  float fn = vnoise(vP0 * 0.9 + wob) * 0.6 + vnoise(vP0 * 3.1 - wob * 1.3 + 5.0) * 0.4;
+  float breaking = smoothstep(0.42, -0.1, J) * vAtten; // only the steepest folds whiten
+  float shore = (1.0 - smoothstep(0.0, 1.2, vDepth)) * step(-0.6, vDepth);
+  float foam = clamp(breaking * smoothstep(0.25, 0.75, fn) * 1.6 + shore * smoothstep(0.35, 0.8, fn) * 0.9, 0.0, 1.0);
+  foam *= 1.0 - smoothstep(600.0, 1400.0, camDist) * 0.7;
+  col = mix(col, vec3(0.86, 0.9, 0.9) * (0.35 + 0.65 * uLight), foam * 0.85);
   col += vec3(0.6, 0.65, 0.8) * uFlash;
 
-  float alpha = mix(0.7, 0.96, smoothstep(0.0, 9.0, vDepth));
+  float alpha = mix(0.72, 0.97, smoothstep(0.0, 9.0, vDepth));
   alpha = clamp(max(alpha, fres) + foam, 0.0, 1.0);
-  // Guard the HDR pipeline: a single Inf/NaN pixel turns into black blocks once bloom spreads it.
   if (any(isnan(col)) || any(isinf(col)) || !(abs(col.r) < 1e5) || !(abs(col.g) < 1e5) || !(abs(col.b) < 1e5)) col = vec3(0.0);
   col = min(col, vec3(40.0));
   gl_FragColor = vec4(col, alpha);
