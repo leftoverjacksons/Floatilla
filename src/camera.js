@@ -1,10 +1,25 @@
 import * as THREE from 'three';
 import { clamp, angleDiff, damp } from './util.js';
 
+// Segment/AABB entry fraction, used to keep scenery out from between boat and camera.
+export function segmentBoxEntry(start, end, bounds) {
+  let near = 0, far = 1;
+  for (const axis of ['x', 'y', 'z']) {
+    const delta = end[axis] - start[axis], min = bounds.min[axis], max = bounds.max[axis];
+    if (Math.abs(delta) < 1e-8) { if (start[axis] < min || start[axis] > max) return null; continue; }
+    let a = (min - start[axis]) / delta, b = (max - start[axis]) / delta;
+    if (a > b) [a, b] = [b, a];
+    near = Math.max(near, a); far = Math.min(far, b);
+    if (near > far) return null;
+  }
+  return near;
+}
+
 /** Third-person orbit camera that trails the lead boat. Drag to orbit, wheel to zoom. */
 export class CameraController {
-  constructor(camera, dom) {
+  constructor(camera, dom, city = null) {
     this.camera = camera;
+    this.city = city;
     this.yaw = Math.PI; this.pitch = 0.4; this.dist = 25;
     this.target = new THREE.Vector3();
     this.dragging = false; this.lastDrag = -10; this.time = 0;
@@ -35,6 +50,20 @@ export class CameraController {
     if (pos.y < minY) pos.y = minY;
     this.shake = Math.max(0, this.shake - dt * 2);
     if (this.shake > 0) pos.add(new THREE.Vector3((Math.random() - 0.5), (Math.random() - 0.5), (Math.random() - 0.5)).multiplyScalar(this.shake * 0.6));
+    if (this.city) {
+      let fraction = 1;
+      const length = pos.distanceTo(this.target);
+      const radius = Math.hypot(pos.x - this.target.x, pos.z - this.target.z) / 2 + 1;
+      this.city.forEachNear((pos.x + this.target.x) / 2, (pos.z + this.target.z) / 2, radius, (building) => {
+        const entry = segmentBoxEntry(this.target, pos, {
+          min: { x: building.minx - 0.4, y: -1000, z: building.minz - 0.4 },
+          max: { x: building.maxx + 0.4, y: building.top + 0.4, z: building.maxz + 0.4 },
+        });
+        // If the focus itself is inside a collider, allow the camera to escape it.
+        if (entry !== null && entry > 0.001) fraction = Math.min(fraction, Math.max(0, entry - 0.7 / Math.max(length, 1)));
+      });
+      if (fraction < 1) pos.lerp(this.target, 1 - fraction);
+    }
     this.camera.position.copy(pos);
     this.camera.lookAt(this.target);
   }

@@ -66,7 +66,7 @@ class Game {
     this.applyQuality(this.quality, true);
     this.audio = new Audio();
     this.env.onThunder = () => { this.audio.thunder(); this.camCtl.shake = 0.4; };
-    this.camCtl = new CameraController(this.camera, renderer.domElement);
+    this.camCtl = new CameraController(this.camera, renderer.domElement, this.city);
     this.world = new World(this);
     this.fleet = new Fleet(this);
     this.ui = new UI(this);
@@ -118,6 +118,7 @@ class Game {
     this.resTimer = 0;
     r.setPixelRatio(this.baseRatio * this.resScale);
     r.setSize(window.innerWidth, window.innerHeight);
+    if (q !== 'low' && !this.pmrem) this.setupEnvironmentMap();
     if (q === 'high' && !this.composer) this.setupHighQuality();
     if (this.composer) { this.composer.setPixelRatio(r.getPixelRatio()); this.composer.setSize(window.innerWidth, window.innerHeight); }
     const sun = this.env.sun;
@@ -136,7 +137,7 @@ class Game {
     this.water.setQuality(q);
     this.water.uniforms.uReflOn.value = q === 'high' ? 1 : 0;
     if (q === 'high') this.water.resizeReflections(r);
-    if (q !== 'high') this.scene.environment = null;
+    if (q === 'low') this.scene.environment = null;
     else if (this.envRT) this.scene.environment = this.envRT.texture;
   }
 
@@ -198,8 +199,11 @@ class Game {
     this.composer.addPass(this.bloom);
     this.composer.addPass(this.gradePass);
     this.composer.addPass(new OutputPass());
+  }
+
+  setupEnvironmentMap() {
     // Environment lighting: a private copy of the sky, re-baked as the sun moves.
-    this.pmrem = new THREE.PMREMGenerator(r);
+    this.pmrem = new THREE.PMREMGenerator(this.renderer);
     this.envScene = new THREE.Scene();
     this.envSky = new Sky(); this.envSky.scale.setScalar(1000);
     this.envSky.material = this.env.sky.material; // shares sun position / turbidity uniforms
@@ -211,7 +215,7 @@ class Game {
     this.envTimer -= dt;
     const sun = this.env.sunDir;
     if (this.envRT && (this.envTimer > 0 || sun.distanceTo(this.envSun) < 0.06)) return;
-    this.envTimer = 12; this.envSun.copy(sun);
+    this.envTimer = this.quality === 'high' ? 12 : 30; this.envSun.copy(sun);
     const old = this.envRT;
     this.envRT = this.pmrem.fromScene(this.envScene, 0.02, 1, 3000);
     this.scene.environment = this.envRT.texture;
@@ -628,8 +632,8 @@ class Game {
     this.frameNo = (this.frameNo || 0) + 1;
     this.renderer.shadowMap.autoUpdate = false;
     if (this.renderer.shadowMap.enabled && this.frameNo % 2 === 0) this.renderer.shadowMap.needsUpdate = true;
+    if (this.quality !== 'low') this.updateEnvMap(rawDt);
     if (this.composer && this.quality === 'high') {
-      this.updateEnvMap(rawDt);
       if (this.water.reflectionsOn) this.water.renderReflection(this.renderer, this.scene, this.camera);
       this.composer.render();
     } else this.renderer.render(this.scene, this.camera);

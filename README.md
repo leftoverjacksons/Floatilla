@@ -18,7 +18,9 @@ npm install
 npm run dev
 ```
 
-Open the printed URL. Quality can be switched in-game from the action wheel (Low / Medium / High; remembered per browser). Medium is the default: direct antialiased rendering, 1024 px nearby shadows and simplified water shading, without HDR post-processing. High adds planar water reflections, subtle bloom, a sky-baked environment map and 2048 px shadows. Low removes shadows and further simplifies water. Append `?q=medium` or `?q=low` to override an older saved quality setting. Each quality switch resets resolution to full; automatic scaling stops at 80% to preserve readability. The FPS counter measures uncapped elapsed frame time.
+Open the printed URL. Quality can be switched in-game from the action wheel (Low / Medium / High; remembered per browser). Medium is the default: direct antialiased rendering, 1024 px nearby shadows, sky-baked environment lighting and simplified water shading, without HDR post-processing. High adds planar water reflections, subtle bloom and 2048 px shadows. Low removes shadows and environment lighting and further simplifies water. Append `?q=medium` or `?q=low` to override an older saved quality setting. Each quality switch resets resolution to full; automatic scaling stops at 80% to preserve readability. The FPS counter measures uncapped elapsed frame time.
+
+For rendering diagnostics, append `&profile=1` to a quality URL. This shows rolling mean/p95 frame time, CPU submission time, total draw calls/triangles across passes, and geometry/texture counts. The CPU number is not GPU time. Run `npm test` for frame-statistics, boat-batching/resource-lifecycle and camera-obstruction regression checks. See [the rendering handoff](CLAUDE_HANDOFF.md) for playtest observations and remaining work.
 
 ## Controls
 
