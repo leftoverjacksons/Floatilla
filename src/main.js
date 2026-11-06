@@ -19,6 +19,7 @@ import { CameraController } from './camera.js';
 import { Audio } from './audio.js';
 import { Fx } from './fx.js';
 import { RadialMenu } from './radial.js';
+import { loadModels } from './models.js';
 import { Landmarks, LANDMARK_RESERVED } from './landmarks.js';
 import { LAYER_NO_REFLECT } from './tiles.js';
 import { readSave, writeSave, restore, consumeLoadFlag, requestLoadOnReload } from './save.js';
@@ -614,4 +615,5 @@ class Game {
   }
 }
 
-window.game = new Game();
+// Authored models load first (the title screen is already showing), then the world is built.
+loadModels().finally(() => { window.game = new Game(); });

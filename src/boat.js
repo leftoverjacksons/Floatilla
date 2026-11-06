@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { rand, pick, clamp, lerp, angleDiff, damp, mulberry32, boatName } from './util.js';
+import { MODELS } from './models.js';
 
 // ---------------------------------------------------------------------------
 // Boat archetypes. Ranges are sampled per boat so each hull is unique.
@@ -317,7 +318,10 @@ export class Boat {
     this.rigs = []; this.props = []; this.oars = []; this.lanterns = [];
     const rng = mulberry32(d.seed);
 
-    if (d.kind === 'raft') this.buildRaft(body, rng);
+    const model = d.kind === 'sailboat' && MODELS.sloop ? MODELS.sloop : null;
+    this.usesModel = !!model;
+    if (model) this.buildFromModel(body, model);
+    else if (d.kind === 'raft') this.buildRaft(body, rng);
     else {
       const { geo, sections } = buildHullGeometry(d);
       const hull = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, side: THREE.DoubleSide }));
@@ -360,6 +364,7 @@ export class Boat {
         zone = [-L * 0.3, L * 0.25];
         break;
       case 'sailboat': {
+        if (model) { zone = this.modelZone; this.helm.copy(this.modelHelm); break; }
         box(body, 0xf2f2ee, B * 0.55, 0.5, L * 0.32, 0, dy + 0.25, -L * 0.02);
         for (const s of [1, -1]) box(body, WINDOW, 0.04, 0.16, L * 0.2, s * B * 0.276, dy + 0.3, -L * 0.02, { roughness: 0.15 });
         this.rigs.push(makeRig(body, L * 0.12, L * 1.25, L * 0.42, d.clothColor, dy));
@@ -475,18 +480,53 @@ export class Boat {
   deckSurfaceY() { return this.deckY; }
 
   /**
+   * Authored (Blender) hull: clone the model, stretch it to this design's length and beam,
+   * tint its topsides, and take deck/walk/helm/rig data from the model's extras.
+   */
+  buildFromModel(body, model) {
+    const d = this.design, info = model.info;
+    const sx = d.beam / info.beam, sz = d.length / info.length;
+    const inst = model.scene.clone(true);
+    inst.scale.set(sx, 1, sz);
+    inst.traverse((o) => {
+      if (!o.isMesh) return;
+      if (o.name.startsWith('WaterMask')) { o.material = WATER_MASK_MAT; o.renderOrder = 0.5; o.frustumCulled = false; return; }
+      if (o.material && o.material.name === 'Topsides') { o.material = o.material.clone(); o.material.color.setHex(d.hullColor); }
+      if (o.material && o.material.name === 'Canvas') { o.material = o.material.clone(); o.material.color.setHex(d.trimColor); }
+    });
+    body.add(inst);
+    this.deckY = info.deckY;
+    this.deckProfile = info.walk.map(([z, w, y]) => ({ z: z * sz, w: w * sx, y }));
+    this.modelObstacles = info.obstacles.map((o) => ({ minx: o.minx * sx, maxx: o.maxx * sx, minz: o.minz * sz, maxz: o.maxz * sz, top: o.top }));
+    this.modelHelm = new THREE.Vector3(info.helm[0] * sx, info.helm[1], info.helm[2] * sz);
+    this.modelZone = [0.16 * d.length, 0.34 * d.length]; // foredeck, forward of the mast
+    this.sections = null;
+    // the game's animated sail hangs off the model's boom pivot
+    const pivot = inst.getObjectByName('BoomPivot');
+    if (pivot) {
+      const h = info.mastH, foot = info.boomLen;
+      const sail = new THREE.Mesh(SAIL_GEO, M(d.clothColor, { side: THREE.DoubleSide, roughness: 0.95 }));
+      sail.castShadow = true; sail.userData.noWalk = true;
+      sail.scale.set(0.2, h - 1.3, foot);
+      pivot.add(sail);
+      const marker = new THREE.Object3D(); marker.position.z = info.mast[2] * sz;
+      this.rigs.push({ group: marker, pivot, sail, h, foot, area: 0.5 * (h - 1.3) * foot * sz });
+    }
+  }
+
+  /**
    * Walkable deck for the player on foot: the deck outline (half-width per
    * station along the keel) plus every solid deck structure as a local AABB.
    * Structures lower than a step (0.6 m) are platforms you can climb onto.
    */
   computeWalkable(body) {
-    this.obstacles = [];
+    this.obstacles = this.modelObstacles ? this.modelObstacles.map((o) => ({ ...o })) : [];
     this.root.updateMatrixWorld(true);
     const inv = this.root.matrixWorld.clone().invert();
     const m = new THREE.Matrix4(), box = new THREE.Box3();
     const dy = this.deckY;
     body.traverse((o) => {
-      if (!o.isMesh || o.userData.noWalk || o.material === WATER_MASK_MAT || !o.geometry) return;
+      if (!o.isMesh || o.userData.noWalk || o.userData.fromModel || o.material === WATER_MASK_MAT || !o.geometry) return;
       if (o.geometry.type !== 'BoxGeometry' && o.geometry.type !== 'CylinderGeometry' && o.geometry.type !== 'ConeGeometry') return;
       if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
       m.multiplyMatrices(inv, o.matrixWorld);
