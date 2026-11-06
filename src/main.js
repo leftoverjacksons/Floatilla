@@ -19,6 +19,7 @@ import { CameraController } from './camera.js';
 import { Audio } from './audio.js';
 import { Fx } from './fx.js';
 import { WakeSim } from './wake.js';
+import { AtmospherePass } from './atmosphere.js';
 import { RadialMenu } from './radial.js';
 import { loadModels } from './models.js';
 import { Landmarks, LANDMARK_RESERVED } from './landmarks.js';
@@ -138,6 +139,9 @@ class Game {
     this.water.reflectionsOn = q === 'high';
     this.water.uniforms.uReflOn.value = q === 'high' ? 1 : 0;
     if (q === 'high') this.water.resizeReflections(r);
+    // medium/high: height fog and light shafts in screen space; low: classic linear fog
+    this.scene.fog = q === 'low' ? this.env.fog : null;
+    if (this.lateScene) this.env.setLate(q === 'low' ? null : this.lateScene, this.atmosphere.sceneDepth, this.atmosphere.sceneRes);
     if (q === 'low') this.scene.environment = null;
     else if (this.envRT) this.scene.environment = this.envRT.texture;
   }
@@ -171,8 +175,17 @@ class Game {
     this.water.hideInReflection.push(this.fx.points, this.fx.decals, this.env.rain);
     const size = r.getDrawingBufferSize(new THREE.Vector2());
     const rt = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples: 4 });
+    rt.depthTexture = new THREE.DepthTexture(size.x, size.y); // read by the atmosphere pass
+    rt.depthTexture.type = THREE.UnsignedIntType;
     this.composer = new EffectComposer(r, rt);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
+    this.atmosphere = new AtmospherePass(this.camera);
+    this.composer.addPass(this.atmosphere);
+    // rain and lightning, drawn over the fogged image
+    this.lateScene = new THREE.Scene();
+    const late = new RenderPass(this.lateScene, this.camera);
+    late.clear = false; late.clearDepth = false;
+    this.composer.addPass(late);
     // Safety net: replace any non-finite pixel and clamp extreme HDR values before bloom.
     this.composer.addPass(new ShaderPass({
       uniforms: { tDiffuse: { value: null } },
@@ -608,6 +621,18 @@ class Game {
       }
       this.wake.update(dt, focus, env.level);
     }
+    // spindrift: in a strong blow, spray is torn off the crests and carried downwind
+    if (dt > 0 && env.windSpeed > 11) {
+      const n = (env.windSpeed - 11) * 9 * dt;
+      const wx = Math.cos(env.windAngle), wz = Math.sin(env.windAngle);
+      for (let i = 0; i < n + (Math.random() < n % 1 ? 1 : 0); i++) {
+        const a = Math.random() * Math.PI * 2, r = 6 + Math.random() * 55;
+        const x = focus.x + Math.cos(a) * r, z = focus.z + Math.sin(a) * r;
+        if (this.water.depthAt(x, z) < 1) continue;
+        const s = env.windSpeed * (0.45 + Math.random() * 0.35);
+        this.fx.emit(x, this.water.heightFast(x, z) + 0.2, z, wx * s, 0.8 + Math.random() * 1.6, wz * s, 0.9 + Math.random() * 0.9, 0.3 + Math.random() * 0.5, 1);
+      }
+    }
     this.fx.update(dt, this.water, 0.3 + 0.7 * (env.lightLevel ?? 1));
     this.city.update(dt, env.night, performance.now() / 1000);
 
@@ -630,7 +655,13 @@ class Game {
     if (this.renderer.shadowMap.enabled && this.frameNo % 2 === 0) this.renderer.shadowMap.needsUpdate = true;
     if (this.composer && this.quality !== 'low') {
       this.updateEnvMap(rawDt);
-      if (this.water.reflectionsOn) this.water.renderReflection(this.renderer, this.scene, this.camera);
+      if (this.water.reflectionsOn) {
+        // reflections have no depth pass of their own: give them linear fog so distant shores fade there too
+        this.scene.fog = this.env.fog;
+        this.water.renderReflection(this.renderer, this.scene, this.camera);
+        this.scene.fog = null;
+      }
+      this.atmosphere.setFrom(env, this.camera);
       this.composer.render();
     } else this.renderer.render(this.scene, this.camera);
   }
