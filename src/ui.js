@@ -1,6 +1,8 @@
 import { RESOURCES, RES_LABEL, RECIPES, recipeCost } from './fleet.js';
 import { MODULES, KINDS } from './boat.js';
 import { clamp } from './util.js';
+import { TRAITS, portraitImg, crewTrait } from './crew.js';
+import { LEVELS, edgeDistance, levelBridges } from './levels.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -18,6 +20,128 @@ export class UI {
     $('craft-close').onclick = () => this.toggleCraft(false);
     $('note-close').onclick = () => ($('note').style.display = 'none');
     $('journal-close').onclick = () => this.toggleJournal(false);
+    this.modalOpen = false; this.crewOpen = false;
+  }
+
+  // ------------------------------------------------------------- modal panels (pause the game)
+  openModal(html, cls = '') {
+    const el = $('modal');
+    el.className = `panel ${cls}`; el.innerHTML = html; el.style.display = 'block';
+    this.modalOpen = true; this.game.paused = true;
+    return el;
+  }
+  closeModal() {
+    $('modal').style.display = 'none';
+    this.modalOpen = false; this.crewOpen = false; this.inspecting = null;
+    if (!this.craftOpen) this.game.paused = false;
+  }
+
+  /** What a route's bridges mean for this boat: one line, with a warning if she cannot get through. */
+  routeNote(key, boat) {
+    if (key === 'end') return '';
+    const br = levelBridges(LEVELS[key], this.game.city);
+    if (!br.length) return 'No bridges on this stretch.';
+    const low = Math.min(...br.map((b) => b.clearance));
+    let s = `${br.length} bridge${br.length > 1 ? 's' : ''}; the lowest leaves about ${low.toFixed(1)} m.`;
+    if (boat.airUp < low - 0.2) s += ` The ${boat.name} (${boat.airUp.toFixed(1)} m) fits under all of them.`;
+    else if (boat.canStrike && boat.airDown < low - 0.2) s += ` The ${boat.name} will have to strike her mast.`;
+    else s += ` <span class="warn">The ${boat.name} stands ${boat.airDown.toFixed(1)} m${boat.canStrike ? ' even with the mast struck' : ''} and will not get under: you would need a lower boat there.</span>`;
+    return s;
+  }
+
+  showLevelCard(L, depth, count, boat) {
+    const exits = L.exits.map((e) => `<li><b>${e.label}</b> → ${e.to === 'end' ? 'the end of the voyage' : `${LEVELS[e.to].name} (water ${LEVELS[e.to].water} m)`}<div class="dim">${e.blurb} ${this.routeNote(e.to, boat)}</div></li>`).join('');
+    const here = levelBridges(L, this.game.city);
+    const hereNote = here.length ? ` There ${here.length > 1 ? 'are' : 'is'} ${here.length} bridge${here.length > 1 ? 's' : ''} here, the lowest with ${Math.min(...here.map((b) => b.clearance)).toFixed(1)} m beneath it.` : '';
+    const el = this.openModal(`<div class="kicker">Level ${depth} of ${count}</div><h2>${L.name}</h2>
+      <div class="dim">Water ${L.water.toFixed(1)} m above the old tide line.${hereNote}</div>
+      <p class="prose">${L.intro}</p>
+      <div class="big">Ways on</div><ul class="exits">${exits}</ul>
+      <p class="dim">Ways out are marked by buoys burning orange flares. Your ${boat.design.label.toLowerCase()} draws ${boat.design.draft.toFixed(1)} m and stands ${boat.airDraft.toFixed(1)} m above the water${boat.canStrike ? ` (${boat.airDown.toFixed(1)} m with the mast struck)` : ''}.</p>
+      <div class="ctas"><button class="cta" id="lc-go">Cast off</button></div>`, 'card-level');
+    el.querySelector('#lc-go').onclick = () => this.closeModal();
+    if (depth === 1) {
+      this.toast('W/S throttle, A/D steer, R sails, M strike the mast, E interact, Tab crew. Right-click for the action wheel.', 'info');
+    }
+  }
+
+  openExit(e) {
+    const g = this.game, b = g.fleet.player;
+    const next = e.to === 'end' ? null : LEVELS[e.to];
+    const el = this.openModal(`<h2>${e.label}</h2><p class="prose">${e.blurb}</p>
+      ${next ? `<p>Next: <b>${next.name}</b>, with the water at ${next.water} m. ${this.routeNote(e.to, b)}</p><p class="dim">Whatever is left here stays here: the boats, the roofs you did not reach.</p>` : '<p>This is the end of the voyage.</p>'}
+      <p class="dim">Aboard the ${b.name}: ${b.crew.length} ${b.crew.length === 1 ? 'person' : 'people'}${b.animals.length ? `, ${b.animals.map((a) => `a ${a.type}`).join(', ')}` : ''}. Hull ${Math.round(b.hp)}/${b.maxHp}.</p>
+      <div class="ctas"><button class="cta" id="ex-go">${next ? 'Set out' : 'Make for the camp'}</button><button class="cta alt" id="ex-no">Not yet</button></div>`);
+    el.querySelector('#ex-go').onclick = () => { this.closeModal(); g.leaveLevel(e); };
+    el.querySelector('#ex-no').onclick = () => this.closeModal();
+  }
+
+  showEnd(e, b, f, run) {
+    const people = b.crew;
+    const el = this.openModal(`<div class="kicker">The end of the voyage</div><h2>${e.label}</h2>
+      <p class="prose">The ${b.name} comes in under the ridge with ${people.length === 1 ? 'only you aboard' : `${people.length} aboard`}. Someone on the shore is waving a lamp.</p>
+      <p>Route: ${run.path.map((k) => LEVELS[k].name).join(' → ')} · rescued ${f.stats.rescued} · lost ${f.stats.lost} · boats swapped ${f.stats.swaps || 0}</p>
+      <div class="cards">${people.map((p) => this.cardHTML(p)).join('')}</div>
+      <div class="ctas"><button class="cta" id="end-new">New voyage</button></div>`, 'card-wide');
+    el.querySelector('#end-new').onclick = () => document.getElementById('restart-new').click();
+  }
+
+  // ------------------------------------------------------------- crew cards
+  cardHTML(p) {
+    const c = p.card;
+    const traits = c.traits.map((t) => TRAITS[t]).filter(Boolean).map((t) => `<div class="trait ${t.bad ? 'bad' : ''} ${t.earned ? 'earned' : ''}" title="${t.desc}"><b>${t.name}</b> <span class="dim">${t.desc}</span></div>`).join('');
+    const hist = c.history.length ? `<ul class="hist">${c.history.slice(-4).map((h) => `<li>${h}</li>`).join('')}</ul>` : '';
+    const task = p.isPlayer ? 'at the helm' : p.task && p.task !== 'idle' ? p.task : 'resting';
+    return `<div class="crewcard">${portraitImg(p)}<div class="cc-body">
+      <div class="big">${p.name}</div><div class="dim">${c.roleName} · ${task} · health ${Math.round(p.health)}</div>
+      <p class="bio">${c.bio}</p>${traits}${hist}</div></div>`;
+  }
+  toggleCrew(force) {
+    const show = force !== undefined ? force : !this.crewOpen;
+    if (!show) { this.closeModal(); return; }
+    const b = this.game.fleet.player;
+    const el = this.openModal(`<button class="close" id="crew-close">Close (Tab)</button><h2>Crew of the ${b.name}</h2>
+      <div class="dim">${b.crew.length} of ${b.maxCrew} berths${b.animals.length ? ` · ${b.animals.map((a) => `a ${a.type}`).join(', ')}` : ''}</div>
+      <div class="cards">${b.crew.map((p) => this.cardHTML(p)).join('')}</div>`, 'card-wide');
+    this.crewOpen = true;
+    el.querySelector('#crew-close').onclick = () => this.closeModal();
+  }
+
+  // ------------------------------------------------------------- another boat alongside
+  boatStats(b) {
+    const sail = b.rigs.length ? `${b.rigs.reduce((a, r) => a + r.area, 0).toFixed(0)} m² of sail` : 'no sail';
+    return `<table class="stats">
+      <tr><td>Hull</td><td>${b.design.label}, ${b.L.toFixed(1)} × ${b.B.toFixed(1)} m</td></tr>
+      <tr><td>Draft</td><td>${b.design.draft.toFixed(1)} m</td></tr>
+      <tr><td>Height</td><td>${b.airUp.toFixed(1)} m${b.canStrike ? ` · ${b.airDown.toFixed(1)} m mast struck` : ''}</td></tr>
+      <tr><td>Drive</td><td>${b.enginePower ? `${b.enginePower} hp engine` : 'no engine'} · ${sail}</td></tr>
+      <tr><td>Condition</td><td>${Math.round(b.hp)}/${b.maxHp}</td></tr>
+      <tr><td>Berths</td><td>${b.maxCrew}</td></tr>
+      <tr><td>Deck slots</td><td>${b.usedSlots}/${b.slots}</td></tr>
+      <tr><td>Cargo</td><td>${b.capacity}</td></tr></table>`;
+  }
+  openInspect(other) {
+    const g = this.game, mine = g.fleet.player;
+    this.inspecting = other;
+    const gear = (from, to, dir) => from.modules.length ? from.modules.map((m, i) => {
+      if (from.modules.indexOf(m) !== i) return '';
+      const n = from.count(m), why = to.canAdd(m);
+      return `<div class="gear"><span><b>${MODULES[m].label}</b>${n > 1 ? ` ×${n}` : ''}<div class="dim">${MODULES[m].desc}</div></span><button data-move="${dir}" data-mod="${m}" ${why ? `disabled title="${why}"` : ''}>${dir === 'take' ? '← Take' : 'Give →'}</button></div>`;
+    }).join('') : '<div class="dim">No gear.</div>';
+    const room = other.maxCrew >= mine.crew.length;
+    const el = this.openModal(`<button class="close" id="in-close">Close</button><h2>Alongside the ${other.name}</h2>
+      <div class="dim">${other.crew.length ? `${other.crew.length} aboard` : 'Nobody aboard'}. Move gear across, or take her and leave the ${mine.name} at anchor.</div>
+      <div class="cmp"><div><div class="big">${mine.name} <span class="dim">(yours)</span></div>${this.boatStats(mine)}<div class="big">Gear</div>${gear(mine, other, 'give')}</div>
+      <div><div class="big">${other.name}</div>${this.boatStats(other)}<div class="big">Gear</div>${gear(other, mine, 'take')}</div></div>
+      <div class="ctas"><button class="cta" id="in-swap" ${room ? '' : 'disabled'}>${room ? `Take the ${other.name}` : `She sleeps ${other.maxCrew}; you are ${mine.crew.length}`}</button>
+      <button class="cta alt" id="in-strip">Strip her for materials</button></div>`, 'card-wide');
+    el.querySelector('#in-close').onclick = () => this.closeModal();
+    el.querySelector('#in-swap').onclick = () => { if (g.swapBoat(other)) this.closeModal(); };
+    el.querySelector('#in-strip').onclick = () => { this.closeModal(); g.world.salvage(other); };
+    for (const btn of el.querySelectorAll('[data-move]')) btn.onclick = () => {
+      const take = btn.dataset.move === 'take';
+      if (g.moveGear(take ? other : mine, take ? mine : other, btn.dataset.mod)) { g.audio.blip(700); this.openInspect(other); }
+    };
   }
 
   toast(msg, kind = 'info') {
@@ -41,11 +165,11 @@ export class UI {
     this.t = 0;
 
     const kn = (b.forwardSpeed * 1.944).toFixed(1);
-    const rate = env.floodRate;
     $('hud-env').innerHTML = `
       <div class="big">${env.timeString()}</div>
       <div>${env.label} · wind ${env.windSpeed.toFixed(1)} m/s ${dirName(env.windAngle)}</div>
-      <div>Water <b>${(env.level).toFixed(1)} m</b> <span class="dim">(${env.floodPace ? `+${(rate * 100).toFixed(0)} cm/h` : 'flood paused'}${env.floodPace !== 1 && env.floodPace ? ` · ${env.paceLabel.toLowerCase()}` : ''})</span></div>
+      <div><b>${g.level.name}</b> <span class="dim">· level ${g.run.path.length} of 3</span></div>
+      <div>Water <b>${(env.level).toFixed(1)} m</b> <span class="dim">(holding; tide and surge ±)</span></div>
       <div class="dim">${Math.round(g.fps)} fps · ${g.quality} quality · ${Math.round((g.resScale || 1) * 100)}% resolution</div>
       ${env.timeScale > 1 ? `<div class="warn">TIME ×${env.timeScale}</div>` : ''}
       ${g.paused ? '<div class="warn">PAUSED</div>' : ''}`;
@@ -59,6 +183,8 @@ export class UI {
       <div class="bar"><div style="width:${Math.abs(b.throttle) * 100}%;background:${b.throttle < 0 ? '#c07040' : '#5fa8d8'}"></div><span>Throttle ${b.throttle < 0 ? 'astern ' : ''}${Math.round(Math.abs(b.throttle) * 100)}%</span></div>
       <div>${kn} kn · ${prop}</div>
       <div>Sails: ${sails}</div>
+      <div>Draft ${b.design.draft.toFixed(1)} m · height ${b.airDraft.toFixed(1)} m${b.canStrike ? (b.mastT >= 1 ? ' <span class="dim">(mast struck)</span>' : b.mastT > 0 ? ` <span class="warn">(${b.mastDown ? 'striking' : 'raising'} mast ${Math.round((b.mastDown ? b.mastT : 1 - b.mastT) * 100)}%)</span>` : '') : ''}</div>
+      ${this.navLine(b)}
       <div>Crew ${b.crew.length}/${b.maxCrew} · slots ${b.usedSlots}/${b.slots}${b.anchored ? ' · anchored' : ''}${b.grounded ? ' · <span class="warn">AGROUND</span>' : ''}</div>
       ${b.waterlogged > 0.05 ? `<div class="warn">Waterlogged ${Math.round(b.waterlogged * 100)}% — repair the hull to regain speed</div>` : ''}`;
 
@@ -72,17 +198,39 @@ export class UI {
       `<div class="res"><span>Morale</span><b>${Math.round(fleet.morale)}</b></div>` +
       (fleet.thirsty ? '<div class="warn">Out of water — crew are suffering!</div>' : fleet.starving ? '<div class="warn">Out of food — crew are weakening!</div>' : '');
 
-    const people = fleet.people;
-    const pp = g.playerPerson;
-    $('hud-fleet').innerHTML = `<div class="big">Floatilla · ${fleet.boats.length} boat${fleet.boats.length > 1 ? 's' : ''} · ${people.length} people · ${fleet.animals.length} animals</div>
-      <div class="dim">${fleet.detached ? 'DETACHED — fleet anchored (F to recall)' : fleet.mode === 'hold' ? 'Holding position (G)' : 'Following your lead'}</div>
-      <div>You: health ${Math.round(pp.health)}</div>` +
-      fleet.boats.slice(0, 9).map((x) => {
-        const d = Math.hypot(x.x - b.x, x.z - b.z);
-        return `<div class="fb ${x === b ? 'lead' : ''}"><span>${x === b ? '★ ' : ''}${x.name}</span><span class="dim">${x.design.label}</span><span>${x.crew.length}/${x.maxCrew}</span><span style="color:${x.hp / x.maxHp > 0.5 ? '#9fd' : '#f96'}">${Math.round(x.hp / x.maxHp * 100)}%</span><span class="dim">${x === b ? '' : Math.round(d) + 'm'}</span></div>`;
-      }).join('') + (fleet.boats.length > 9 ? `<div class="dim">+${fleet.boats.length - 9} more</div>` : '');
+    $('hud-fleet').innerHTML = `<div class="big">Crew of the ${b.name} <span class="dim">· ${b.crew.length}/${b.maxCrew} · Tab for cards</span></div><div class="strip">` +
+      b.crew.map((p) => `<div class="mini">${portraitImg(p, 'mini-p')}<div><b>${p.name}</b><div class="dim">${p.card.roleName}</div><div class="hbar"><i style="width:${p.health}%"></i></div></div></div>`).join('') +
+      `</div>${b.animals.length ? `<div class="dim">Also aboard: ${b.animals.map((a) => `a ${a.type}`).join(', ')}</div>` : ''}`;
     this.drawMinimap();
     if (this.craftOpen) this.renderCraft();
+  }
+
+  /**
+   * Depth under the keel and the clearance of bridges ahead. Anyone notices a bridge close up; a pilot,
+   * sharp eyes or a depth sounder give the numbers early.
+   */
+  navLine(b) {
+    const g = this.game, level = g.env.level, city = g.city;
+    const keen = b.count('sounder') || crewTrait(b, 'pilot') || crewTrait(b, 'eyes');
+    const out = [];
+    const fx = Math.sin(b.heading), fz = Math.cos(b.heading);
+    if (b.count('sounder') || crewTrait(b, 'pilot')) {
+      const bow = g.floorMap.floorAt(b.x + fx * b.L * 0.45, b.z + fz * b.L * 0.45);
+      const under = level - Math.max(bow, city.topAt(b.x + fx * b.L * 0.45, b.z + fz * b.L * 0.45)) - b.design.draft;
+      out.push(`<span class="${under < 0.6 ? 'warn' : ''}">${under.toFixed(1)} m under the keel</span>`);
+    }
+    const reach = keen ? 110 : 40;
+    let bridge = null;
+    for (let d = 10; d <= reach && !bridge; d += 10) {
+      const x = b.x + fx * d, z = b.z + fz * d;
+      city.forEachNear(x, z, 6, (c) => { if (!bridge && c.kind === 'bridge') { const [lx, lz] = city.local(c, x, z); if (Math.abs(lx) < c.hx + 4 && Math.abs(lz) < c.hz + 4) bridge = { c, d }; } });
+    }
+    if (bridge) {
+      const clr = bridge.c.bottom - level;
+      const fits = clr > b.airDraft + 0.2, fitsStruck = b.canStrike && clr > b.airDown + 0.2;
+      out.push(`<span class="${fits ? '' : 'warn'}">Bridge ${Math.round(bridge.d)} m ahead: ${clr.toFixed(1)} m clearance${fits ? '' : fitsStruck ? ' — strike the mast (M)' : ' — she will not fit'}</span>`);
+    }
+    return out.length ? `<div>${out.join(' · ')}</div>` : '';
   }
 
   // ------------------------------------------------------------- minimap
@@ -106,6 +254,11 @@ export class UI {
         if (fl - gr > 1.5) { r += 20; gg += 20; b += 20; }
       }
       const o = (j * N + i) * 4;
+      if (g.level) {
+        const wx = fm.rect.minx + (i + 0.5) / N * fm.rect.size, wz = fm.rect.minz + (j + 0.5) / N * fm.rect.size;
+        const ed = edgeDistance(g.level, wx, wz);
+        if (ed > 0) { const k = ed > 40 ? 0.3 : 0.55; r *= k; gg *= k; b = b * k + 18; }
+      }
       img.data[o] = r; img.data[o + 1] = gg; img.data[o + 2] = b; img.data[o + 3] = 255;
     }
     ctx.putImageData(img, 0, 0);
@@ -127,7 +280,8 @@ export class UI {
     const w = g.world, env = g.env;
     // Only what the crew has actually spotted appears on the chart. Spotted things stay marked.
     const lookouts = g.fleet.boats.reduce((a, b) => a + (b.taskCounts?.lookout || 0), 0);
-    const sight = 320 * (1 + Math.min(2, lookouts) * 0.25) * (1 - env.night * 0.55) * clamp(env.cur.fog / 900, 0.3, 1);
+    const eyes = crewTrait(pl, 'eyes') ? 1.4 : 1;
+    const sight = 320 * eyes * (1 + Math.min(2, lookouts) * 0.25) * (1 - env.night * 0.55) * clamp(env.cur.fog * env.edgeFog / 900, 0.3, 1);
     this.sight = sight;
     const seen = (e, range) => {
       let s = e.seen;
@@ -151,6 +305,14 @@ export class UI {
       c.fillStyle = lm.visited ? '#b8a07a' : '#ffcf8a'; c.strokeStyle = '#000'; c.lineWidth = 1;
       c.fillRect(-4, -4, 8, 8); c.strokeRect(-4, -4, 8, 8); c.restore();
       if (!off) { c.fillStyle = '#f4ead8'; c.fillText(lm.name.split(' (')[0], Math.min(a + 7, W - 90), b2 + 3); }
+    }
+    // ways out: always on the chart
+    for (const e of g.exits || []) {
+      let [a, b2] = toS(e.x, e.z);
+      const off = a < 6 || b2 < 6 || a > W - 6 || b2 > W - 6;
+      a = clamp(a, 7, W - 7); b2 = clamp(b2, 7, W - 7);
+      c.fillStyle = '#ff9a40'; c.strokeStyle = '#000'; c.beginPath(); c.moveTo(a, b2 - 6); c.lineTo(a + 5, b2 + 4); c.lineTo(a - 5, b2 + 4); c.closePath(); c.fill(); c.stroke();
+      if (!off) { c.fillStyle = '#ffd8a8'; c.fillText(e.label, Math.min(a + 8, W - 80), b2 + 3); }
     }
     // sight radius ring
     c.strokeStyle = 'rgba(255,255,255,0.15)'; c.lineWidth = 1; c.beginPath(); c.arc(W / 2, W / 2, sight / span * W, 0, Math.PI * 2); c.stroke();
@@ -222,7 +384,7 @@ export class UI {
       let status;
       if (!L.reachable(lm)) {
         const day = L.dayForLevel(lm.reachLevel);
-        status = `<span class="warn">Out of reach</span> — the boats can get in once the flood reaches ${lm.reachLevel.toFixed(1)} m (now ${env.level.toFixed(1)} m)${day ? `, around day ${day}` : ''}.`;
+        status = `<span class="warn">Out of reach</span> at this water level: a boat could get in with the water at ${lm.reachLevel.toFixed(1)} m (now ${env.level.toFixed(1)} m).`; void day;
       } else status = lm.visited ? 'Explored.' : '<span class="warn">Reachable — not yet explored.</span>';
       if (lm.group) status += lm.rescued ? ' Its people are accounted for.' : ' Someone may still be there.';
       if (lm.action && lm.visited) status += ` <span class="dim">${lm.action.desc}</span>`;
@@ -237,8 +399,8 @@ export class UI {
   showGameOver(reason) {
     const f = this.game.fleet, env = this.game.env;
     $('gameover').style.display = 'flex';
-    $('go-text').innerHTML = `${reason}<br><br>You survived until ${env.timeString()} with the water at ${env.level.toFixed(1)} m.<br>
-      Survivors rescued: ${f.stats.rescued} · Animals saved: ${f.stats.animals} · Boats in the floatilla: ${f.boats.length}`;
+    $('go-text').innerHTML = `${reason}<br><br>${this.game.level.name}, ${env.timeString()}, the water at ${env.level.toFixed(1)} m.<br>
+      Survivors rescued: ${f.stats.rescued} · lost: ${f.stats.lost}<br><br>Retry starts this level again with what you had when you arrived.`;
   }
 }
 

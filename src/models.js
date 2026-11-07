@@ -27,7 +27,7 @@ export async function loadModels() {
         o.receiveShadow = true;
         o.userData.fromModel = true;
       });
-      MODELS[kind] = { scene: mergeStatic(gltf.scene), info };
+      MODELS[kind] = { scene: mergeStatic(gltf.scene, info), info };
     } catch (e) {
       console.warn(`Model "${kind}" unavailable, using the procedural boat:`, e && e.message);
     }
@@ -42,30 +42,56 @@ export function modelFor(kind) { return MODELS[kind === 'sailboat' ? 'sloop' : k
  * keeping named nodes the game animates or replaces (BoomPivot subtree, WaterMask) separate.
  * Cuts ~150 draw calls per boat to ~20.
  */
-function mergeStatic(scene) {
+// everything that stands on a mast and comes down with it (stays and shrouds are hidden when it is struck)
+const RIG = /^(Mast|Masthead|MastLight|Topmast|Springstay|Radar|Spreader|Windex|FurledJib|JibCover|Forestay|Backstay|LowerShroud|UpperShroud|Shroud)/;
+const STAY = /(Shroud|stay)/;
+function mergeStatic(scene, info = {}) {
   scene.updateMatrixWorld(true);
   const keep = new Set();
   // animated or replaced nodes stay separate: booms, oars, propellers
   scene.traverse((o) => { if (/^(BoomPivot|OarPivot|Prop)/.test(o.name)) o.traverse((c) => keep.add(c)); });
-  const groups = new Map(), victims = [];
+  // Masts and their rigging merge separately, one set per mast, so a mast can be struck (folded down).
+  const mastZ = info.rigs ? info.rigs.map((r) => r.mastZ) : info.mast ? [info.mast[2]] : [];
+  const rigOf = (o) => { for (let q = o; q && q !== scene; q = q.parent) if (RIG.test(q.name)) return q; return null; };
+  const groups = new Map(), victims = [], box = new THREE.Box3();
   scene.traverse((o) => {
     if (!o.isMesh || keep.has(o) || o.name.startsWith('WaterMask')) return;
     const g = o.geometry.clone().applyMatrix4(o.matrixWorld);
-    const sig = o.material.uuid + '|' + Object.keys(g.attributes).sort().join(',');
-    if (!groups.has(sig)) groups.set(sig, { material: o.material, geos: [] });
-    groups.get(sig).geos.push(g.index ? g : g);
+    let key = 'hull';
+    const rig = rigOf(o);
+    if (rig) {
+      g.computeBoundingBox(); box.copy(g.boundingBox);
+      const z = (box.min.z + box.max.z) / 2;
+      if (!mastZ.length) mastZ.push(z);
+      let k = 0; mastZ.forEach((m, i) => { if (Math.abs(m - z) < Math.abs(mastZ[k] - z)) k = i; });
+      key = `${STAY.test(rig.name) ? 'shroud' : 'rig'}${k}`;
+    }
+    const sig = key + '|' + o.material.uuid + '|' + Object.keys(g.attributes).sort().join(',');
+    if (!groups.has(sig)) groups.set(sig, { key, material: o.material, geos: [] });
+    groups.get(sig).geos.push(g);
     victims.push(o);
   });
   for (const o of victims) o.parent.remove(o);
-  const merged = new THREE.Group(); merged.name = 'StaticMerged';
-  for (const { material, geos } of groups.values()) {
+  const holders = {};
+  const holder = (key) => {
+    if (holders[key]) return holders[key];
+    const h = new THREE.Group();
+    h.name = key === 'hull' ? 'StaticMerged' : key.startsWith('rig') ? `RigGroup${key.slice(3)}` : `RigShroud${key.slice(6)}`;
+    scene.add(h); return (holders[key] = h);
+  };
+  for (const { key, material, geos } of groups.values()) {
     const geo = mergeGeometries(geos.map((g) => (g.index ? g.toNonIndexed() : g)), false);
     if (!geo) continue;
     const m = new THREE.Mesh(geo, material);
     m.castShadow = true; m.receiveShadow = true; m.userData.fromModel = true;
     m.name = material.name;
-    merged.add(m);
+    holder(key).add(m);
   }
-  scene.add(merged);
+  // where each mast stands: the foot of its own geometry, at its centreline
+  for (const [key, h] of Object.entries(holders)) {
+    if (!key.startsWith('rig')) continue;
+    box.setFromObject(h);
+    h.userData.foot = [0, box.min.y, mastZ[+key.slice(3)] ?? (box.min.z + box.max.z) / 2];
+  }
   return scene;
 }

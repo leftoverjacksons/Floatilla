@@ -26,7 +26,13 @@ import { loadModels } from './models.js';
 import { Landmarks, LANDMARK_RESERVED } from './landmarks.js';
 import { findSpot, waterInfo } from './terrain.js';
 import { LAYER_NO_REFLECT } from './tiles.js';
-import { readSave, writeSave, restore, consumeLoadFlag, requestLoadOnReload } from './save.js';
+import { LEVELS, LEVEL_COUNT, readRun, writeRun, newRun, clearRun, edgeDistance, inwardDir } from './levels.js';
+import { earnTrait, addHistory } from './crew.js';
+import { FlareColumn } from './flare.js';
+
+const AUTOSTART = 'floatilla-autostart';
+function takeAutostart() { try { const f = sessionStorage.getItem(AUTOSTART); sessionStorage.removeItem(AUTOSTART); return !!f; } catch { return false; } }
+function reloadInto(run) { writeRun(run); try { sessionStorage.setItem(AUTOSTART, '1'); } catch { /* ignore */ } location.reload(); }
 
 class Game {
   constructor() {
@@ -56,8 +62,14 @@ class Game {
 
     // Shared uniforms for flood-aware materials (buildings, terrain, props).
     this.floodUniforms = { uLevel: { value: 0 }, uNight: { value: 0 }, uPower: { value: 1 } };
+    // The voyage decides which level this page is before anything is built.
+    let run = readRun();
+    this.freshRun = !run || !LEVELS[run.level];
+    if (this.freshRun) { run = newRun(); writeRun(run); }
+    this.run = run; this.level = LEVELS[run.level];
+    this.levelSeed = (run.seed + run.path.length * 7919) >>> 0;
     this.floorMap = new FloorMap(1024);
-    this.city = new City(this.scene, this.floodUniforms, this.floorMap, LANDMARK_RESERVED);
+    this.city = new City(this.scene, this.floodUniforms, this.floorMap, LANDMARK_RESERVED, this.levelSeed);
     this.landmarks = new Landmarks(this, this.scene, this.city, this.floorMap, this.floodUniforms);
     buildTerrain(this.scene, this.floodUniforms, this.city);
     this.water = new Water(this.scene, this.floorMap);
@@ -67,6 +79,9 @@ class Game {
     this.water.uniforms.uWakeOrigin.value = this.wake.origin;
     this.water.uniforms.uWakeOn.value = this.wake.ok ? 1 : 0;
     this.env = new Environment(this.scene, renderer, this.rng);
+    // the water holds at this level's height; each level starts in the morning of its own day
+    this.env.fixedLevel = this.level.water; this.env.floodPace = 0;
+    this.env.hours = this.level.hour; this.env.day = this.run.path.length;
     this.fx = new Fx(this.scene);
     this.applyQuality(this.quality, true);
     this.audio = new Audio();
@@ -91,15 +106,10 @@ class Game {
       onSlam: (b, e) => { if (b === this.fleet.player) { this.camCtl.shake = Math.max(this.camCtl.shake || 0, e * 0.25); if (this.audio.splash) this.audio.splash(e); } },
     };
 
-    this.world.populateHarbour();
     this.overtopping = new Overtopping(this.city);
-    const save = consumeLoadFlag() ? readSave() : null;
-    this.loadedFromSave = false;
-    if (save) {
-      try { restore(this, save); this.loadedFromSave = true; }
-      catch (err) { console.error('Save could not be restored', err); location.reload(); return; }
-    } else this.setupStart();
-    this.autosaveTimer = 90;
+    this.setupLevel();
+    this.world.populateLevel(this.level, this.levelSeed);
+    this.buildExits();
     this.searchlight = new THREE.SpotLight(0xfff4dd, 0, 140, 0.32, 0.4, 1.2);
     this.searchlight.castShadow = false;
     this.scene.add(this.searchlight, this.searchlight.target);
@@ -237,48 +247,93 @@ class Game {
     if (old) old.dispose();
   }
 
-  setupStart() {
-    const rng = this.rng;
-    this.water.level = 0;
-    // A tired 10 m cruising sloop: room to grow into, a weak auxiliary engine and a hull that needs work.
-    const d = randomDesign(rng, 'sailboat');
-    Object.assign(d, { length: 10, beam: 3.3, draft: 1.1, freeboard: 0.95, engine: 8, name: 'Little Ark', hullColor: 0xe8e2d0, trimColor: 0x1f3f6b, clothColor: 0xe8dcc0 });
-    // start on the bay just off the river mouth, facing the town
-    const start = findSpot(-40, -150, -30, -1.5, 400, (x, z) => { const wi = waterInfo(x, z); return wi.kind === 'bay' && wi.d < -25; });
-    this.startPos = start;
-    const boat = new Boat(d, { x: start.x, z: start.z, heading: Math.PI, role: 'player', flagColor: 0xff7a1a, hpFrac: 0.55 });
+  /** The player's boat at the level's way in: a fresh start on the first level, otherwise what the run carried here. */
+  setupLevel() {
+    const rng = this.rng, L = this.level, st = L.start, carry = this.run.carry;
+    this.env.update(0, new THREE.Vector3(st.x, 0, st.z), this.camera);
+    this.water.level = this.env.level;
+    let boat;
+    if (carry) {
+      boat = new Boat(carry.design, { x: st.x, z: st.z, heading: st.heading, role: 'player', flagColor: 0xff7a1a, modules: carry.modules, mastDown: carry.mastDown });
+      boat.hp = Math.min(boat.maxHp, carry.hp);
+      Object.assign(this.fleet.inv, carry.inv); this.fleet.morale = carry.morale; Object.assign(this.fleet.stats, carry.stats || {});
+    } else {
+      // A tired 10 m cruising sloop: a good sailer with a tall mast, a weak auxiliary engine and a hull that needs work.
+      const d = randomDesign(rng, 'sailboat');
+      Object.assign(d, { length: 10, beam: 3.3, draft: 1.1, freeboard: 0.95, engine: 8, name: 'Little Ark', hullColor: 0xe8e2d0, trimColor: 0x1f3f6b, clothColor: 0xe8dcc0 });
+      boat = new Boat(d, { x: st.x, z: st.z, heading: st.heading, role: 'player', flagColor: 0xff7a1a, hpFrac: 0.7 });
+    }
+    this.startPos = st;
     this.scene.add(boat.root);
     this.world.boats.push(boat);
-    this.playerPerson = new Person(rng, { isPlayer: true, name: 'You' });
     this.fleet.boats.push(boat); boat.fleet = this.fleet;
     this.fleet.player = boat;
-    boat.addPerson(this.playerPerson);
-    boat.addAnimal(new Animal(rng, 'dog'));
+    if (carry) {
+      for (const c of carry.crew) { const p = new Person(rng, c); if (p.isPlayer) this.playerPerson = p; boat.addPerson(p); }
+      for (const a of carry.animals) boat.addAnimal(new Animal(rng, a.type, a.seed));
+    }
+    if (!this.playerPerson) { this.playerPerson = new Person(rng, { isPlayer: true, name: 'You' }); boat.addPerson(this.playerPerson); }
+    if (!carry) boat.addAnimal(new Animal(rng, 'dog'));
     this.fleet.trail = [{ x: boat.x, z: boat.z }];
     this.camCtl.snapTo(boat);
+    // the first level: someone waiting at the end of the nearest pier for a boat out
+    if (!carry && L.harbour) {
+      let best = null, bd = Infinity;
+      for (const c of this.city.colliders) {
+        if (c.kind !== 'pier' || !c.pierEnd || !this.world.inLevel(c.pierEnd.x, c.pierEnd.z, 30)) continue;
+        const d = Math.hypot(c.pierEnd.x - st.x, c.pierEnd.z - st.z);
+        if (d > 150 && d < bd) { bd = d; best = c; }
+      }
+      if (best) {
+        const e = best.pierEnd;
+        best.roof = { minx: e.x - 2, maxx: e.x + 2, minz: e.z - 2, maxz: e.z + 2, top: best.top };
+        const g = this.world.spawnSurvivorGroup(best, { people: 1, animal: null });
+        const p = g.people[0];
+        if (p) p.card = { ...p.card, role: 'ferryman', roleName: 'Ferry hand', traits: ['pilot', 'strong'], bio: 'Ran the river ferry until the landing went under. Knows the way up the river and the creek.' };
+      }
+    }
+  }
 
-    // A nearby abandoned rowboat and a family waiting at the end of a pier.
-    const w = this.world;
-    // The first discoveries: a half-sunk rowboat drifting off the quay, and one
-    // person stranded on a warehouse roof in the drowned harbor district.
-    this.env.update(0, new THREE.Vector3(), this.camera);
-    const level = this.env.level;
-    this.water.level = level;
-    const rb = findSpot(start.x + 90, start.z + 60, -30, -1.5, 300, (x, z) => waterInfo(x, z).d < -15);
-    w.spawnBoat('rowboat', rb.x, rb.z, 'derelict', { hpFrac: 0.3, heading: 2.5 });
-    // someone waiting at the end of a pier for a boat out
-    let best = null, bd = Infinity;
-    for (const c of this.city.colliders) {
-      if (c.kind !== 'pier' || !c.pierEnd) continue;
-      const d = Math.hypot(c.pierEnd.x - start.x, c.pierEnd.z - start.z);
-      if (d > 150 && d < bd) { bd = d; best = c; }
-    }
-    if (best) {
-      const e = best.pierEnd;
-      best.roof = { minx: e.x - 2, maxx: e.x + 2, minz: e.z - 2, maxz: e.z + 2, top: best.top };
-      w.spawnSurvivorGroup(best, { people: 1, animal: 'cat' });
-    }
-    for (let i = 0; i < 3; i++) { const pk = findSpot(start.x + (rng() - 0.5) * 120, start.z + 40 + rng() * 60, -30, -1, 120); w.spawnPickup(pk.x, pk.z); }
+  /** Ways out of the level: a buoy with a lamp and a column of flare smoke, visible from far off. */
+  buildExits() {
+    const lampMat = new THREE.MeshStandardMaterial({ color: 0xffd8a0, emissive: 0xffa040, emissiveIntensity: 3 });
+    const red = new THREE.MeshStandardMaterial({ color: 0xc8382a, roughness: 0.6 }), white = new THREE.MeshStandardMaterial({ color: 0xeeeeea, roughness: 0.6 });
+    this.exits = this.level.exits.map((e) => {
+      const g = new THREE.Group();
+      for (let i = 0; i < 4; i++) { const c = new THREE.Mesh(new THREE.CylinderGeometry(0.9 - i * 0.12, 1.0 - i * 0.12, 0.9, 12), i % 2 ? white : red); c.position.y = 0.2 + i * 0.9; c.castShadow = true; g.add(c); }
+      const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.35, 12, 8), lampMat); lamp.position.y = 4.1; g.add(lamp);
+      const light = new THREE.PointLight(0xffa040, 40, 60, 2); light.position.y = 4.3; g.add(light);
+      g.position.set(e.x, this.water.level, e.z);
+      this.scene.add(g);
+      return { ...e, mesh: g, flare: new FlareColumn(this.scene, e.x, e.z) };
+    });
+  }
+
+  /** What the voyage carries from one level to the next. */
+  carry() {
+    const b = this.fleet.player, f = this.fleet;
+    return {
+      design: { ...b.design }, modules: [...b.modules], hp: b.hp, mastDown: b.mastDown,
+      crew: b.crew.map((p) => ({ seed: p.seed, name: p.name, isPlayer: p.isPlayer, health: p.health, skill: p.skill, card: p.card })),
+      animals: b.animals.map((a) => ({ type: a.type, seed: a.seed })),
+      inv: { ...f.inv }, morale: f.morale, stats: { ...f.stats },
+    };
+  }
+
+  leaveLevel(e) {
+    const pl = this.fleet.player;
+    for (const p of pl.crew) addHistory(p, `Came through ${this.level.name.replace(/^The /, 'the ')} aboard the ${pl.name}.`);
+    if (e.to === 'end') { this.finishRun(e); return; }
+    const run = this.run;
+    run.carry = this.carry(); run.level = e.to; run.path.push(e.to); run.begun = false;
+    reloadInto(run);
+  }
+
+  finishRun(e) {
+    this.over = true;
+    const pl = this.fleet.player, f = this.fleet;
+    clearRun();
+    this.ui.showEnd(e, pl, f, this.run);
   }
 
   warnOnce(m) {
@@ -291,26 +346,23 @@ class Game {
   bindInput() {
     const title = document.getElementById('title');
     const cta = document.getElementById('cta-new'), cont = document.getElementById('cta-continue');
-    const existing = readSave();
+    const L = this.level, depth = this.run.path.length;
     const start = () => {
       title.style.display = 'none'; this.started = true; this.audio.init();
-      if (this.loadedFromSave) this.ui.toast(`Voyage resumed: ${this.env.timeString()}, flood at ${this.env.level.toFixed(1)} m.`, 'good');
-      else {
-        this.ui.toast('Day 1. Just you, the dog and a tired old sloop. The sea is rising: by tomorrow it will be over the quays. Find people. Mend the boat.', 'info');
-        this.ui.toast('W/S throttle, A/D steer. Right-click anywhere for the action wheel: sails, interact, workshop, fleet, save.', 'info');
-      }
+      this.run.begun = true; writeRun(this.run);
+      this.ui.showLevelCard(L, depth, LEVEL_COUNT, this.fleet.player);
     };
-    if (this.loadedFromSave) {
-      cta.textContent = `Resume — ${this.env.timeString()}`;
-      cont.style.display = 'none';
-    } else if (existing) {
-      const n = existing.boats.length;
-      cont.textContent = `Continue — Day ${existing.env.day}, ${n} boat${n > 1 ? 's' : ''}`;
+    if (!this.freshRun && (depth > 1 || this.run.begun)) {
+      cont.textContent = `Continue — level ${depth} of ${LEVEL_COUNT}: ${L.name}`;
       cont.style.display = '';
-      cont.onclick = (e) => { e.stopPropagation(); requestLoadOnReload(); };
-      cta.textContent = 'New voyage (overwrites save on next save)';
-    } else cont.style.display = 'none';
-    cta.onclick = (e) => { e.stopPropagation(); start(); };
+      cont.onclick = (e) => { e.stopPropagation(); start(); };
+      cta.textContent = 'New voyage';
+      cta.onclick = (e) => { e.stopPropagation(); reloadInto(newRun()); };
+    } else {
+      cont.style.display = 'none';
+      cta.onclick = (e) => { e.stopPropagation(); start(); };
+    }
+    if (takeAutostart()) setTimeout(start, 50);
     window.addEventListener('keydown', (e) => {
       if (!this.started || this.over) return;
       const k = e.key.toLowerCase();
@@ -319,11 +371,13 @@ class Game {
       this.keys.add(k);
       const f = this.fleet, pl = f.player;
       switch (k) {
-        case 'c': this.ui.toggleCraft(); break;
-        case 'escape': if (this.ui.craftOpen) this.ui.toggleCraft(false); else { this.toggleHelp(false); this.ui.toggleJournal(false); document.getElementById('note').style.display = 'none'; } break;
+        case 'c': if (!this.ui.modalOpen) this.ui.toggleCraft(); break;
+        case 'tab': if (!this.ui.craftOpen && (!this.ui.modalOpen || this.ui.crewOpen)) this.ui.toggleCrew(); break;
+        case 'escape': if (this.ui.craftOpen) this.ui.toggleCraft(false); else if (this.ui.modalOpen) this.ui.closeModal(); else { this.toggleHelp(false); this.ui.toggleJournal(false); document.getElementById('note').style.display = 'none'; } break;
         case 'h': case '?': this.toggleHelp(); break;
-        case 'p': if (!this.ui.craftOpen) this.paused = !this.paused; break;
+        case 'p': if (!this.ui.craftOpen && !this.ui.modalOpen) this.paused = !this.paused; break;
       }
+      if (this.ui.modalOpen) return;
       if (this.paused) return;
       const A = this.actions;
       switch (k) {
@@ -331,15 +385,11 @@ class Game {
         case 'x': A.salvage(); break;
         case 'r': A.sails(); break;
         case ' ': A.stop(); break;
-        case 'tab': A.switchBoat(e.shiftKey ? -1 : 1); break;
-        case 'f': A.detach(); break;
-        case 'g': A.hold(); break;
+        case 'm': A.mast(); break;
         case 'l': A.light(); break;
         case 't': A.time(); break;
-        case 'k': A.save(); break;
         case 'j': A.journal(); break;
         case 'v': A.walk(); break;
-        case 'o': A.load(); break;
         case ']': this.env.levelOffset += 1; this.ui.toast('[debug] Water +1 m'); break;
         case '[': this.env.levelOffset -= 1; this.ui.toast('[debug] Water −1 m'); break;
       }
@@ -347,7 +397,8 @@ class Game {
     window.addEventListener('keyup', (e) => this.keys.delete(e.key.toLowerCase()));
     this.radial = new RadialMenu(this);
     window.addEventListener('blur', () => this.keys.clear());
-    document.getElementById('restart').onclick = () => location.reload();
+    document.getElementById('restart').onclick = () => { try { sessionStorage.setItem(AUTOSTART, '1'); } catch { /* ignore */ } location.reload(); };
+    document.getElementById('restart-new').onclick = () => reloadInto(newRun());
   }
 
   /** Every player action, shared by the hotkeys and the right-click radial menu. */
@@ -356,16 +407,21 @@ class Game {
     return {
       interact: () => this.world.interact(false),
       salvage: () => { const it = this.world.findInteraction(); if (it && it.kind === 'claim') this.world.interact(true); },
-      sails: () => { if (pl.rigs.length) { pl.sailsUp = !pl.sailsUp; ui.toast(pl.sailsUp ? 'Sails up.' : 'Sails furled.'); } else ui.toast('No sails on this boat — build a Mast & Sail in the Workshop.', 'warn'); },
+      sails: () => {
+        if (!pl.rigs.length) return ui.toast('No sails on this boat. Fit a Mast & Sail in the workshop, or find a boat that has one.', 'warn');
+        if (pl.mastT > 0) return ui.toast(pl.mastDown ? 'The mast is struck. Raise it (M) before setting sail.' : 'Still raising the mast…', 'warn');
+        pl.sailsUp = !pl.sailsUp; ui.toast(pl.sailsUp ? 'Sails up.' : 'Sails furled.');
+      },
+      mast: () => {
+        if (!pl.canStrike) return ui.toast('This boat has no mast to strike.', 'warn');
+        const down = pl.toggleMast();
+        ui.toast(down ? `Striking the mast: about ${Math.round(pl.strikeTime)} s with ${pl.crew.length} aboard. She will be ${pl.airDown.toFixed(1)} m high with it down.` : `Raising the mast: about ${Math.round(pl.strikeTime)} s.`);
+      },
+      crew: () => ui.toggleCrew(),
       stop: () => { pl.throttle = 0; },
       craft: () => ui.toggleCraft(),
-      switchBoat: (dir = 1) => { const b = f.cycleLead(dir); ui.toast(b ? `You take the helm of the ${b.name}.` : 'No other boats in the floatilla yet.'); },
-      detach: () => ui.toast(f.boats.length > 1 ? f.toggleDetach() : 'You have no floatilla to detach from yet.'),
-      hold: () => ui.toast(f.toggleHold()),
       light: () => { if (pl.count('light')) pl.lightOn = !pl.lightOn; else ui.toast('No searchlight on this boat — build one in the Workshop.'); },
       time: () => { this.env.timeScale = this.env.timeScale === 1 ? 6 : this.env.timeScale === 6 ? 30 : 1; ui.toast(`Time ×${this.env.timeScale}`); },
-      save: () => ui.toast(writeSave(this) ? `Saved (${this.env.timeString()}).` : 'Could not save.', 'good'),
-      load: () => { if (readSave()) { ui.toast('Loading last save…'); setTimeout(requestLoadOnReload, 300); } else ui.toast('No save found.', 'warn'); },
       pause: () => { if (!ui.craftOpen) this.paused = !this.paused; },
       walk: () => this.setOnFoot(!this.onFoot),
       journal: () => ui.toggleJournal(),
@@ -377,30 +433,52 @@ class Game {
   menuItems() {
     const f = this.fleet, pl = f.player, A = this.actions;
     const it = this.world.findInteraction();
-    const many = f.boats.length > 1;
     const items = [
-      { icon: '✋', label: it ? it.label.replace(/\[[A-Z]\]\s*/g, '').split('·')[0].trim() : 'Interact', key: 'E', accent: !!it, disabled: !it, why: 'Nothing close enough. Bring the boat alongside survivors, a rooftop cache or another boat.', desc: 'Do it.', run: A.interact },
+      { icon: '✋', label: it ? it.label.replace(/\[[A-Z]\]\s*/g, '').split('·')[0].split(':')[0].trim() : 'Interact', key: 'E', accent: !!it, disabled: !it, why: 'Nothing close enough. Bring the boat alongside survivors, a rooftop cache, another boat or a way out.', desc: 'Do it.', run: A.interact },
     ];
-    if (it && it.kind === 'claim') items.push({ icon: '⚒', label: 'Salvage', key: 'X', desc: 'Strip this boat for wood, scrap, cloth and parts. It sinks.', run: A.salvage });
+    if (it && it.kind === 'claim') items.push({ icon: '⚒', label: 'Strip her', key: 'X', desc: 'Strip this boat for wood, scrap, cloth and parts. She sinks.', run: A.salvage });
     items.push(
-      { icon: '⛵', label: pl.sailsUp ? 'Furl sails' : 'Raise sails', key: 'R', disabled: !pl.rigs.length, why: 'This boat has no mast. Build a Mast & Sail in the Workshop.', desc: 'Sails give no drive within about 35° of the wind.', run: A.sails },
+      { icon: '⛵', label: pl.sailsUp ? 'Furl sails' : 'Raise sails', key: 'R', disabled: !pl.rigs.length || pl.mastT > 0, why: pl.rigs.length ? 'The mast is struck.' : 'This boat has no mast.', desc: 'Sails give no drive within about 32° of the wind.', run: A.sails },
+      { icon: '⤵', label: pl.mastDown ? 'Raise mast' : 'Strike mast', key: 'M', disabled: !pl.canStrike, why: 'No mast to strike.', desc: `Lower the mast to get under low bridges: ${pl.airUp.toFixed(1)} m up, ${pl.airDown.toFixed(1)} m struck. No sailing while it is down. About ${Math.round(pl.strikeTime)} s.`, run: A.mast },
       { icon: '⏹', label: 'All stop', key: 'Space', disabled: pl.throttle === 0, why: 'Throttle is already at zero.', desc: 'Throttle to zero.', run: A.stop },
+      { icon: '👥', label: 'Crew', key: 'Tab', desc: 'Everyone aboard: who they are, what they are good at, what has happened to them.', run: A.crew },
       { icon: this.onFoot ? '☸' : '🚶', label: this.onFoot ? 'Take the helm' : 'Walk the deck', key: 'V', desc: this.onFoot ? 'Back to steering.' : 'Leave the wheel and explore the boat on foot (WASD, Shift to hurry). The boat holds her course.', run: A.walk },
-      { icon: '📖', label: 'Journal', key: 'J', desc: 'Landmarks you have found, notes you have read, and when the flood will open the way to the rest.', run: A.journal },
-      { icon: '🔨', label: 'Workshop', key: 'C', desc: 'Repairs, upgrades and boatbuilding. Pauses the game.', run: A.craft },
-      { icon: '⚓', label: f.mode === 'hold' ? 'Fleet: follow me' : 'Fleet: hold', key: 'G', disabled: !many, why: 'You have no other boats yet.', desc: f.mode === 'hold' ? 'Boats weigh anchor and follow your wake.' : 'All other boats drop anchor where they are.', run: A.hold },
-      { icon: '🧭', label: f.detached ? 'Regroup' : 'Go alone', key: 'F', disabled: !many, why: 'You have no other boats yet.', desc: f.detached ? 'Call the floatilla to your position.' : 'Leave the floatilla anchored and scout ahead.', run: A.detach },
-      { icon: '⇄', label: 'Switch boat', key: 'Tab', disabled: !many, why: 'You have no other boats yet.', desc: 'Take the helm of the next boat; it becomes the lead.', run: () => A.switchBoat(1) },
-      { icon: '🔦', label: pl.lightOn ? 'Light off' : 'Searchlight', key: 'L', disabled: !pl.count('light'), why: 'No searchlight fitted. Build one in the Workshop.', desc: 'Lights the way at night and deters raiders.', run: A.light },
-      { icon: '🌊', label: `Flood: ${this.env.paceLabel}`, desc: `How fast the water rises. Next: ${FLOOD_PACES[(FLOOD_PACES.findIndex(([v]) => v === this.env.floodPace) + 1) % FLOOD_PACES.length][1]}. Now ${(this.env.floodRate * 100).toFixed(0)} cm per game hour (a game hour is 50 s).`,
-        run: () => { const i = (FLOOD_PACES.findIndex(([v]) => v === this.env.floodPace) + 1) % FLOOD_PACES.length; this.env.floodPace = FLOOD_PACES[i][0]; this.ui.toast(`Flood pace: ${FLOOD_PACES[i][1]}`); } },
+      { icon: '🔨', label: 'Workshop', key: 'C', desc: 'Repairs and gear. Pauses the game.', run: A.craft },
+      { icon: '📖', label: 'Journal', key: 'J', desc: 'Landmarks you have found and notes you have read.', run: A.journal },
+      { icon: '🔦', label: pl.lightOn ? 'Light off' : 'Searchlight', key: 'L', disabled: !pl.count('light'), why: 'No searchlight fitted.', desc: 'Lights the way at night and deters raiders.', run: A.light },
       { icon: '⏩', label: `Time ×${this.env.timeScale === 1 ? 6 : this.env.timeScale === 6 ? 30 : 1}`, key: 'T', desc: `Currently ×${this.env.timeScale}.`, run: A.time },
       { icon: '🖥', label: `Quality: ${this.quality}`, desc: `Next: ${{ low: 'medium', medium: 'high', high: 'low' }[this.quality]}. High adds water reflections (the most expensive part); medium keeps glow, shadows and antialiasing; low is plain and fastest. Currently ${Math.round(this.fps)} fps.`, run: () => { const n = { low: 'medium', medium: 'high', high: 'low' }[this.quality]; this.applyQuality(n); this.ui.toast(`Quality: ${n}`); } },
-      { icon: '💾', label: 'Save', key: 'K', desc: 'Save to this browser. Autosaves every 90 s.', run: A.save },
-      { icon: '📂', label: 'Load', key: 'O', disabled: !readSave(), why: 'No save yet.', desc: 'Reload the last save.', run: A.load },
       { icon: '?', label: 'Help', key: 'H', desc: 'All controls.', run: A.help },
     );
     return items;
+  }
+
+  /** Swap boats: everyone aboard and the dog cross over; the old boat is left at anchor where she lies. */
+  swapBoat(b) {
+    const f = this.fleet, old = f.player;
+    if (this.onFoot) this.setOnFoot(false);
+    if (b.maxCrew < old.crew.length) return false;
+    for (const p of [...old.crew]) { const wp = p.mesh.getWorldPosition(new THREE.Vector3()); old.removePerson(p); b.addPerson(p); if (!p.isPlayer) this.world.jump(p, b, wp); }
+    for (const a of [...old.animals]) { old.removeAnimal(a); b.addAnimal(a); }
+    f.boats = [b]; b.fleet = f; f.player = b;
+    b.role = 'player'; b.mooring = null; b.anchored = false; b.sailsUp = false;
+    old.fleet = null; old.role = 'moored'; old.throttle = 0; old.rudder = 0; old.sailsUp = false; old.lightOn = false;
+    old.mooring = { x: old.x, z: old.z, h: old.heading, pier: null };
+    f.trail = [{ x: b.x, z: b.z }];
+    f.stats.swaps = (f.stats.swaps || 0) + 1;
+    for (const p of b.crew) addHistory(p, `Moved aboard the ${b.name} (${b.design.label}), leaving the ${old.name} behind.`);
+    this.ui.toast(`You take the ${b.name}. The ${old.name} is left at anchor; you can come back for her.`, 'good');
+    this.audio.chime();
+    return true;
+  }
+
+  /** Move one piece of gear between the player's boat and another boat alongside. */
+  moveGear(from, to, m) {
+    if (to.canAdd(m)) return false;
+    const i = from.modules.indexOf(m); if (i < 0) return false;
+    from.modules.splice(i, 1); from.rebuild();
+    to.modules.push(m); to.rebuild();
+    return true;
   }
 
   toggleHelp(v) {
@@ -571,6 +649,43 @@ class Game {
     }
   }
 
+  /** The edge of the level, the exits' flares, and crew growing from what happens aboard. */
+  levelRules(dt) {
+    const pl = this.fleet.player, env = this.env, L = this.level;
+    const ed = edgeDistance(L, pl.x, pl.z);
+    const t = THREE.MathUtils.smoothstep(ed, -170, 0);
+    const vis = env.cur.fog * (1 - t) + Math.min(env.cur.fog, 70) * t;
+    env.edgeFog += (vis / env.cur.fog - env.edgeFog) * Math.min(1, dt * 1.5);
+    if (ed > -10) {
+      const [ix, iz] = inwardDir(L, pl.x, pl.z), k = Math.min(4, 0.6 + Math.max(0, ed) * 0.08);
+      pl.vx += ix * k * dt; pl.vz += iz * k * dt;
+      this.warnOnce('The fog is impenetrable this way and the current sets you back. The ways on are marked by flares.');
+    }
+    for (const e of this.exits) {
+      e.mesh.position.y = this.water.heightFast(e.x, e.z);
+      e.mesh.rotation.z = Math.sin(performance.now() * 0.0011 + e.x) * 0.08;
+      e.flare.update(dt, e.mesh.position.y, this.wind, env.cur.fog * env.edgeFog, 0.25 + 0.75 * (env.lightLevel ?? 1), this.renderer.getDrawingBufferSize(this._dbs || (this._dbs = new THREE.Vector2())).y);
+    }
+    // earned traits
+    this.growT = (this.growT || 0) - dt;
+    if (this.growT > 0) return;
+    this.growT = 1;
+    const hands = pl.crew.filter((p) => !p.isPlayer);
+    if ((pl.galeTime || 0) > 45 && !pl.galeCredited) {
+      pl.galeCredited = true;
+      for (const p of hands) if (earnTrait(p, 'stormtested', `Kept the ${pl.name} sailing through a gale.`)) this.ui.toast(`${p.name} is now Storm-tested.`, 'good');
+    }
+    if (pl.mastT >= 1 && hands.length) {
+      let under = false;
+      this.city.forEachNear(pl.x, pl.z, 2, (c) => { if (c.kind === 'bridge') { const [lx, lz] = this.city.local(c, pl.x, pl.z); if (Math.abs(lx) < c.hx && Math.abs(lz) < c.hz) under = true; } });
+      if (under && !this.bridgeCredit) {
+        this.bridgeCredit = true;
+        const p = hands[Math.floor(Math.random() * hands.length)];
+        if (earnTrait(p, 'bridgehand', `Struck the ${pl.name}'s mast to get her under a bridge.`)) this.ui.toast(`${p.name} is now a Low-Bridge Hand.`, 'good');
+      }
+    }
+  }
+
   frame() {
     requestAnimationFrame(this.frame);
     const rawDt = Math.min(this.clock.getDelta(), 0.05);
@@ -602,8 +717,7 @@ class Game {
       f.update(dt, this.ctx, gameHours);
       for (const b of [...f.boats]) b.update(dt, this.ctx);
       this.collideBoats();
-      this.autosaveTimer -= dt;
-      if (this.autosaveTimer <= 0) { this.autosaveTimer = 90; writeSave(this); }
+      this.levelRules(dt);
       this.world.update(dt, this.ctx);
       this.landmarks.update(dt, this.ctx);
       for (const b of [...this.world.boats]) if (b.sunk && b.fleet === null && !f.boats.includes(b)) this.world.removeBoat(b);

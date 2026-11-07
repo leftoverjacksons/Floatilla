@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { rand, pick, clamp, lerp, angleDiff, damp, mulberry32, boatName } from './util.js';
 import { MODELS, modelFor } from './models.js';
+import { crewTrait } from './crew.js';
 
 // ---------------------------------------------------------------------------
 // Boat archetypes. Ranges are sampled per boat so each hull is unique.
@@ -33,7 +34,10 @@ export const MODULES = {
   still: { label: 'Solar Still', slot: true, max: 2, desc: 'Slowly makes water in sunlight.' },
   planter: { label: 'Planter Boxes', slot: true, max: 3, desc: 'Grows a little food by day.' },
   light: { label: 'Searchlight', slot: true, max: 1, desc: 'Light the night (L). Deters raiders.' },
+  tabernacle: { label: 'Mast Tabernacle', slot: false, max: 1, desc: 'A hinged mast step: strike and raise the mast (M) twice as fast.' },
+  sounder: { label: 'Depth Sounder', slot: false, max: 1, found: true, desc: 'Reads the depth under the keel and warns of shoals and low bridges ahead.' },
 };
+
 
 const HULL_PALETTES = [
   [0xf2f2ee, 0x1f3f6b], [0x1f3f6b, 0xf2f2ee], [0xa8322a, 0xf2f2ee], [0x2f5a3a, 0xe8d8a8], [0xe8d8a8, 0x7a3a22],
@@ -265,6 +269,7 @@ export class Boat {
     this.vx = 0; this.vz = 0; this.yawRate = 0;
     this.y = 0; this.vy = 0; this.pitch = 0; this.vp = 0; this.roll = 0; this.vr = 0;
     this.throttle = 0; this.rudder = 0; this.sailsUp = false; this.sailDeploy = 0;
+    this.mastDown = !!opts.mastDown; this.mastT = this.mastDown ? 1 : 0; // 0 stepped .. 1 struck
     this.crew = []; this.animals = [];
     this.fleet = null; this.role = opts.role || 'derelict'; // player|follower|derelict|npc|raider
     this.anchored = false;
@@ -477,6 +482,84 @@ export class Boat {
     this.computeStations(zone);
     this.computeWalkable(body);
     this.zone = zone;
+    this.measureRig(body);
+  }
+
+  /**
+   * Heights above the waterline with the mast up and struck (the boat's air draft), and the pivots
+   * the rig folds back on when it is struck. Authored models carry their mast, boom and shrouds as
+   * named nodes; procedural rigs are their own groups.
+   */
+  measureRig(body) {
+    const rigParts = new Set();
+    this.strikers = [];
+    if (this.usesModel) {
+      // authored masts (models.js keeps each mast's parts in a RigGroup<k>, its rigging in RigShroud<k>)
+      const inst = body.children[0];
+      const rigGroups = inst.children.filter((o) => /^RigGroup\d+$/.test(o.name));
+      inst.updateMatrixWorld(true);
+      const wp = new THREE.Vector3();
+      for (const rg of rigGroups) {
+        const k = rg.name.slice(8), foot = rg.userData.foot || [0, this.deckY, 0];
+        const pivot = new THREE.Group(); pivot.position.set(foot[0], foot[1], foot[2]);
+        inst.add(pivot); pivot.attach(rg);
+        const st = { g: pivot, shrouds: inst.children.filter((o) => o.name === `RigShroud${k}`) };
+        this.strikers.push(st);
+      }
+      // each boom (and its sail) folds with the nearest mast
+      const booms = []; inst.traverse((o) => { if (/^BoomPivot/.test(o.name)) booms.push(o); });
+      for (const bp of booms) {
+        if (!this.strikers.length) break;
+        bp.getWorldPosition(wp); inst.worldToLocal(wp);
+        let best = this.strikers[0];
+        for (const st of this.strikers) if (Math.abs(st.g.position.z - wp.z) < Math.abs(best.g.position.z - wp.z)) best = st;
+        best.g.attach(bp);
+      }
+      for (const st of this.strikers) { rigParts.add(st.g); st.shrouds.forEach((o) => rigParts.add(o)); }
+    }
+    // jury rigs fitted as gear are their own groups on deck
+    for (const r of this.rigs) if (r.group.parent) { this.strikers.push({ g: r.group, shrouds: [], proc: true }); rigParts.add(r.group); }
+    // heights, measured in boat space with the rig stepped
+    const saved = this.strikers.map((st) => st.g.rotation.x);
+    this.strikers.forEach((st) => (st.g.rotation.x = 0));
+    const box = new THREE.Box3(), tmp = new THREE.Box3();
+    const m0 = this.root.matrixWorld.clone();
+    this.root.matrixWorld.identity(); body.updateMatrixWorld(true);
+    let up = 0, down = 0;
+    const skip = (o) => { for (let q = o; q && q !== body; q = q.parent) if (rigParts.has(q)) return true; return false; };
+    body.traverse((o) => {
+      if (!o.isMesh || o.material === WATER_MASK_MAT || !o.geometry) return;
+      if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+      tmp.copy(o.geometry.boundingBox).applyMatrix4(o.matrixWorld);
+      up = Math.max(up, tmp.max.y);
+      if (!skip(o)) down = Math.max(down, tmp.max.y);
+    });
+    void box;
+    this.root.matrixWorld.copy(m0);
+    this.strikers.forEach((st, i) => (st.g.rotation.x = saved[i]));
+    this.airUp = up; this.airDown = Math.max(down, this.deckY + 1.2);
+    this.applyStrike();
+  }
+  /** Current height above the waterline: what must fit under a bridge. */
+  get airDraft() { return this.airUp + (this.airDown - this.airUp) * this.mastT; }
+  get canStrike() { return this.strikers.length > 0; }
+  applyStrike() {
+    const t = this.mastT, ang = -1.42 * t; // fold aft until the mast lies along the boat
+    for (const st of this.strikers) {
+      st.g.rotation.x = ang;
+      for (const o of st.shrouds) o.visible = t < 0.05;
+    }
+  }
+  /** Seconds to strike or raise the mast: quicker with hands, a tabernacle, or someone who has done it. */
+  get strikeTime() {
+    const hands = Math.max(1, this.crew.length);
+    return 36 / (1 + 0.6 * (hands - 1)) * (this.count('tabernacle') ? 0.5 : 1) * (crewTrait(this, 'bridgehand') ? 0.5 : 1);
+  }
+  toggleMast() {
+    if (!this.canStrike) return null;
+    this.mastDown = !this.mastDown;
+    if (this.mastDown) this.sailsUp = false;
+    return this.mastDown;
   }
 
   deckSurfaceY() { return this.deckY; }
@@ -795,19 +878,29 @@ export class Boat {
     const thr = control ? this.throttle : 0;
     if (Math.abs(thr) > 0.02) {
       if (this.enginePower > 0 && ctx.fuel(this) > 0 && !this.noEngine) {
-        const T = 900 * Math.pow(this.enginePower, 0.62) * thr * (thr < 0 ? 0.5 : 1);
+        const mech = crewTrait(this, 'mechanic') ? 1 : 0;
+        const T = 900 * Math.pow(this.enginePower * (1 + 0.2 * mech), 0.62) * thr * (thr < 0 ? 0.5 : 1);
         Fu += T; this.engineOn = true;
-        ctx.useFuel(Math.abs(thr) * Math.pow(this.enginePower, 0.6) * 0.0012 * dt, this);
+        ctx.useFuel(Math.abs(thr) * Math.pow(this.enginePower, 0.6) * 0.0012 * dt * (mech ? 0.75 : 1), this);
       } else if (this.sailDeploy < 0.5 || thr < 0 || (this.sailDrive ?? 0) < 0.1) {
         this.rowingWanted = true;
         const rowers = Math.max(1, Math.min(crewN, L < 9 ? 4 : 6));
-        Fu += thr * rowers * (L < 9 ? 120 : 220) * (thr < 0 ? 0.6 : 1) * (this.design.kind === 'raft' ? 0.8 : 1);
+        Fu += thr * rowers * (L < 9 ? 120 : 220) * (thr < 0 ? 0.6 : 1) * (this.design.kind === 'raft' ? 0.8 : 1) * (crewTrait(this, 'strong') ? 1.35 : 1);
         this.rowing = true;
       }
     }
 
     // Sails.
     const sailArea = this.rigs.reduce((a, r) => a + r.area, 0);
+    // striking / raising the mast
+    const mastGoal = this.mastDown ? 1 : 0;
+    if (this.mastT !== mastGoal) {
+      if (this.mastDown) this.sailsUp = false;
+      const step = dt / this.strikeTime;
+      this.mastT = mastGoal > this.mastT ? Math.min(1, this.mastT + step) : Math.max(0, this.mastT - step);
+      this.applyStrike();
+    }
+    if (this.mastT > 0) this.sailsUp = false;
     this.sailDeploy += ((this.sailsUp && control && sailArea > 0 ? 1 : 0) - this.sailDeploy) * damp(1.2, dt);
     const W = ctx.wind; // world wind vector (blowing toward)
     const ax = W.x - this.vx, az = W.y - this.vz;
@@ -815,10 +908,12 @@ export class Boat {
     const cosA = (fx * -ax + fz * -az) / aw; // angle off the apparent wind (0 = head to wind)
     const alpha = Math.acos(clamp(cosA, -1, 1)) * 180 / Math.PI;
     let cDrive;
-    if (alpha < 32) cDrive = 0;
-    else if (alpha < 50) cDrive = (alpha - 32) / 18 * 0.9;
+    const salt = crewTrait(this, 'oldsalt') ? 1 : 0, nogo = 32 - 4 * salt;
+    if (alpha < nogo) cDrive = 0;
+    else if (alpha < 50) cDrive = (alpha - nogo) / (50 - nogo) * 0.9;
     else if (alpha < 110) cDrive = 0.9 + (alpha - 50) / 60 * 0.2;
     else cDrive = 1.1 - (alpha - 110) / 70 * 0.15;
+    cDrive *= 1 + 0.12 * salt;
     this.sailAlpha = alpha; this.sailDrive = cDrive;
     const q = 0.5 * 1.2 * aw * aw;
     let heel = 0;
@@ -829,7 +924,8 @@ export class Boat {
       Fv += Fs * leeSide;
       heel = clamp(Fs / (this.mass * 9.81) * 2.2, 0, 0.5) * leeSide / this.stability;
       if (env.windSpeed > 15.5 && this.sailDeploy > 0.5) {
-        this.hurt((env.windSpeed - 15.5) * 0.6 * dt, ctx, true);
+        this.hurt((env.windSpeed - 15.5) * 0.6 * dt * (crewTrait(this, 'stormtested') ? 0.5 : 1), ctx, true);
+        this.galeTime = (this.galeTime || 0) + dt;
         if (this.role === 'player' && this.rng() < dt * 0.5) ctx.warn('Gale! Reef the sails (R) before they tear the rig apart.');
       }
     }
@@ -883,7 +979,7 @@ export class Boat {
     for (let i = 0; i < nC; i++) {
       const t = nC === 1 ? 0 : -L / 2 + B / 2 + (L - B) * i / (nC - 1);
       const cx = this.x + fx * t, cz = this.z + fz * t;
-      city.circleContacts(cx, cz, B * 0.55, level - d.draft * 0.6, (nx, nz, pen, c) => this.resolveContact(nx, nz, pen, t, ctx, c.kind));
+      city.circleContacts(cx, cz, B * 0.55, level - d.draft * 0.6, (nx, nz, pen, c) => this.resolveContact(nx, nz, pen, t, ctx, c.kind), level + this.airDraft);
     }
     this.damageCooldown -= dt;
 
@@ -972,6 +1068,7 @@ export class Boat {
       const fx = Math.sin(this.heading), fz = Math.cos(this.heading);
       this.yawRate += along * (fx * nz - fz * nx) * -vn * 0.08 / Math.max(1, this.L * 0.3);
       const impact = -vn;
+      if (kind === 'bridge' && this.role === 'player' && ctx.warn) ctx.warn(this.canStrike && this.mastT < 1 ? 'The mast is fouling the bridge. Strike the mast (M) to get under.' : 'Not enough room under this bridge for her.');
       if (impact > 1.4 && this.damageCooldown <= 0) {
         const dmg = (impact - 1.4) * 7 * (kind === 'shore' ? 0.4 : 1);
         this.hurt(dmg, ctx);

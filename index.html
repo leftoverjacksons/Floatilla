@@ -69,6 +69,28 @@
   .jentry { padding: 10px 0; border-top: 1px solid rgba(160,200,220,0.15); }
   .jnote { margin-top: 6px; padding: 8px 10px; background: rgba(255,240,210,0.05); border-left: 2px solid #b8a07a; }
   .jnote p { font-family: Georgia, serif; margin: 4px 0 0; color: #e6dccb; }
+  #modal { display: none; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(620px, 94vw); max-height: 88vh; overflow: auto; pointer-events: auto; background: rgba(8,16,22,0.95); padding: 18px 22px; font-size: 13.5px; z-index: 15; }
+  #modal.card-wide { width: min(980px, 96vw); }
+  #modal h2 { margin: 2px 0 6px; font-weight: 400; font-size: 26px; letter-spacing: 1px; }
+  #modal .kicker { text-transform: uppercase; letter-spacing: 3px; font-size: 11px; color: #ffcf8a; }
+  #modal .prose { font-family: Georgia, 'Times New Roman', serif; font-size: 15px; line-height: 1.6; color: #efe6d4; }
+  #modal .close { position: absolute; right: 14px; top: 12px; }
+  #modal ul.exits { padding-left: 18px; } #modal ul.exits li { margin: 6px 0; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 10px; margin-top: 10px; }
+  .crewcard { display: grid; grid-template-columns: 96px 1fr; gap: 10px; padding: 8px; border-radius: 8px; background: rgba(255,240,210,0.05); border: 1px solid rgba(255,207,138,0.2); }
+  .portrait { width: 96px; height: 120px; object-fit: cover; border-radius: 5px; background: #223; }
+  .crewcard .bio { font-family: Georgia, serif; font-style: italic; color: #e6dccb; margin: 4px 0 6px; font-size: 13px; }
+  .trait { font-size: 12px; margin: 2px 0; padding: 2px 6px; border-left: 2px solid #6aa8c8; }
+  .trait.bad { border-color: #e05040; } .trait.earned { border-color: #ffcf8a; }
+  ul.hist { margin: 6px 0 0; padding-left: 16px; font-size: 11.5px; color: #b8c8d0; }
+  .cmp { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 10px; }
+  table.stats { width: 100%; border-collapse: collapse; margin: 4px 0 10px; font-size: 12.5px; }
+  table.stats td { padding: 2px 4px; border-bottom: 1px solid rgba(160,200,220,0.1); } table.stats td:first-child { color: #9ab0bc; width: 34%; }
+  .gear { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; padding: 4px 0; border-bottom: 1px solid rgba(160,200,220,0.08); font-size: 12.5px; }
+  .strip { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 4px; }
+  .mini { display: grid; grid-template-columns: 30px 1fr; gap: 6px; align-items: center; font-size: 11.5px; }
+  .mini-p { width: 30px; height: 38px; object-fit: cover; border-radius: 3px; }
+  .hbar { height: 3px; background: rgba(255,255,255,0.1); margin-top: 2px; } .hbar i { display: block; height: 100%; background: #6fbf73; }
   #gameover { display: none; }
   #gameover h2 { font-size: 40px; font-weight: 300; letter-spacing: 6px; }
   #gameover p { max-width: 560px; text-align: center; line-height: 1.6; }
@@ -86,29 +108,28 @@
 <div id="journal" class="panel"><button id="journal-close">Close (J)</button><h2>Journal</h2><div id="journal-body"></div></div>
 <div id="radial"><div id="radial-center"></div></div>
 <div id="toasts"></div>
+<div id="modal" class="panel"></div>
 
 <div id="help" class="panel">
   <div class="big">Controls</div>
   <div class="keys">
     <b>W / S</b><span>Throttle lever up / down (astern below zero) · Space: all stop</span>
     <b>A / D</b><span>Rudder</span>
-    <b>R</b><span>Raise / furl sails (no drive within ~35° of the wind)</span>
+    <b>R</b><span>Raise / furl sails (no drive within ~32° of the wind)</span>
+    <b>M</b><span>Strike / raise the mast, to get under low bridges (no sailing while it is down)</span>
+    <b>Tab</b><span>Crew cards: roles, traits, what has happened to them</span>
     <b>J</b><span>Journal: landmarks found, notes read, when the flood will open the rest</span>
     <b>V</b><span>Walk the deck / take the helm. On foot: WASD walk (camera-relative), Shift hurry, E pet animals</span>
-    <b>E</b><span>Interact: rescue, haul rooftop caches, crew derelicts, hail boats</span>
-    <b>X</b><span>Salvage a derelict for materials</span>
-    <b>C</b><span>Crafting &amp; boat modifications (pauses)</span>
-    <b>Tab</b><span>Take the helm of another boat (it becomes the lead)</span>
-    <b>F</b><span>Detach from the floatilla for recon / call it back</span>
-    <b>G</b><span>Fleet: hold position / follow</span>
+    <b>E</b><span>Interact: rescue, haul rooftop caches, go aboard other boats (swap gear or boats), hail, leave by an exit</span>
+    <b>X</b><span>Strip a boat alongside for materials</span>
+    <b>C</b><span>Workshop: repairs and gear (pauses)</span>
     <b>L</b><span>Searchlight (if fitted)</span>
     <b>Right-click</b><span>Action wheel: every command below, with what it does</span>
     <b>Mouse</b><span>Left-drag to orbit, wheel to zoom</span>
     <b>T</b><span>Time warp ×1 / ×6 / ×30 · P pause</span>
-    <b>K / O</b><span>Save / load (autosaves every 90 s, stored in this browser)</span>
-    <b>[ ]</b><span>Debug: lower / raise the water 1 m (flood pace is on the action wheel)</span>
+    <b>[ ]</b><span>Debug: lower / raise the water 1 m</span>
   </div>
-  <p class="dim">Floating supplies are collected automatically when any floatilla boat passes close. Crew pick their own jobs: helm, fishing, trimming sails, rowing, repairs, lookout, sleep. Everyone eats and drinks. The water never stops rising.</p>
+  <p class="dim">Floating supplies are collected automatically when any floatilla boat passes close. Crew pick their own jobs: helm, fishing, trimming sails, rowing, repairs, lookout, sleep. Everyone eats and drinks. Each level is a stretch of the valley with the water at one height; the ways on are marked by orange flares. The voyage is saved when you arrive at each level.</p>
 </div>
 
 <div id="craft" class="panel">
@@ -119,7 +140,7 @@
 
 <div id="title" class="overlay">
   <h1>FLOATILLA</h1>
-  <p>The harbor is the first to go. Then the streets, the houses, the towers.<br>Gather what floats. Pull people from rooftops. Lash boats together and keep moving.</p>
+  <p>The harbour went first. Every night the water climbs higher.<br>Take one boat inland through the drowned town, find people and better boats on the way, and reach the high ground.</p>
   <div class="keys">
     <b>W/S</b><span>throttle</span><b>A/D</b><span>steer</span><b>R</b><span>sails</span><b>E</b><span>interact</span>
     <b>Right-click</b><span>action wheel (everything else)</span><b>Drag</b><span>orbit camera</span>
@@ -130,7 +151,7 @@
 <div id="gameover" class="overlay">
   <h2>THE WATER WON</h2>
   <p id="go-text"></p>
-  <button id="restart">Try again</button>
+  <div class="ctas"><button class="cta" id="restart">Retry this level</button><button class="cta alt" id="restart-new">New voyage</button></div>
 </div>
 <script type="module" src="/src/main.js"></script>
 </body>

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { pick, rand, FIRST_NAMES, damp, mulberry32 } from './util.js';
+import { makeCard } from './crew.js';
 
 const SKIN = [0xf1c27d, 0xe0ac69, 0xc68642, 0x8d5524, 0xffdbac, 0x6b4226];
 const SHIRTS = [0x2e6da4, 0x7a2e2e, 0x3d7a3d, 0x8a6d2e, 0x555a66, 0x9b4f8a, 0x2e8a86, 0xb5651d, 0x444444];
@@ -51,6 +52,7 @@ export class Person {
     this.name = opts.name || pick(look, FIRST_NAMES);
     this.isPlayer = !!opts.isPlayer;
     this.health = opts.health ?? 100;
+    this.card = opts.card ? JSON.parse(JSON.stringify(opts.card)) : makeCard(this.seed, { captain: this.isPlayer });
     this.skill = opts.skill ?? { repair: rand(look, 0.6, 1.4), fish: rand(look, 0.6, 1.4), sail: rand(look, 0.6, 1.4) };
     this.rig = makePersonMesh(look, opts.isPlayer ? { shirt: 0x24476b, vest: 0xff7a1a, hat: 0xd9b44a } : {});
     this.mesh = this.rig.group;

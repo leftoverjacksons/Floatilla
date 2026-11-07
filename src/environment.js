@@ -44,6 +44,8 @@ export class Environment {
     this.hours = 7.0; this.day = 1; this.elapsedDays = 0; // game time since start
     this.timeScale = 1;
     this.levelOffset = 0;
+    this.fixedLevel = null; // a level's water height: the flood holds there (tide and surge still move it)
+    this.edgeFog = 1;       // <1 near the edge of the level: the fog closes in
     this.floodDays = 0; this.floodPace = 1;
     this.state = 'clear';
     this.stateTimer = 5;
@@ -213,7 +215,7 @@ export class Environment {
     const tide = 0.6 * Math.sin(t / 12.42 * Math.PI * 2);
     // storm surge: rain raises the bay a little, a full storm pushes in most of a metre
     const surge = this.cur.rain * 0.3 + Math.max(0, this.cur.wind - 10) * 0.06;
-    this.level = floodLevel(this.floodDays) + tide + surge + this.levelOffset;
+    this.level = (this.fixedLevel ?? floodLevel(this.floodDays)) + tide + surge + this.levelOffset;
 
     // Sun & moon.
     const a = (this.hours - 6) / 24 * Math.PI * 2;
@@ -252,9 +254,9 @@ export class Environment {
 
     const sceneFog = this.fog;
     sceneFog.color.copy(this.fogColor).lerp(new THREE.Color(0.7, 0.75, 0.85), this.flash * 0.5);
-    sceneFog.far = Math.max(120, Math.min(this.cur.fog * 0.6, 3000)); sceneFog.near = Math.min(40, sceneFog.far * 0.1);
+    sceneFog.far = Math.max(60, Math.min(this.cur.fog * this.edgeFog * 0.6, 3000)); sceneFog.near = Math.min(40, sceneFog.far * 0.1);
     this.hazeMat.uniforms.uColor.value.copy(sceneFog.color);
-    this.hazeMat.uniforms.uAmount.value = smoothstep(0.5, 1.0, cloud) * 0.85 + smoothstep(600, 150, this.cur.fog) + this.flash * 0.2;
+    this.hazeMat.uniforms.uAmount.value = smoothstep(0.5, 1.0, cloud) * 0.85 + smoothstep(600, 150, this.cur.fog * this.edgeFog) + this.flash * 0.2;
     this.renderer.toneMappingExposure = lerp(0.42, 0.62, day) * (1 - cloud * 0.12);
 
     // Lights.

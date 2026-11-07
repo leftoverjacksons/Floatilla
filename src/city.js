@@ -23,7 +23,7 @@ const INDUSTRY = { x: 640, z: -170, r: 260 };
  * Colliders with `bottom` (bridge decks) only block while the water is within 3 m of their underside.
  */
 export class City {
-  constructor(scene, uniforms, floorMap, reserved = []) {
+  constructor(scene, uniforms, floorMap, reserved = [], seed = 1234) {
     this.reserved = reserved;
     this.colliders = [];
     this.grid = new Map();
@@ -35,7 +35,7 @@ export class City {
     this.kit = {};         // asset → instances (town kit models)
     this.waterfront = [];  // edges where waves can break over a deck: { x, z, nx, nz, len, top }
     this.occ = new Map(); // occupancy circles for placement
-    const rng = mulberry32(1234);
+    const rng = mulberry32(seed);
 
     this.generateLighthouse();
     this.generatePiers(rng);
@@ -471,15 +471,17 @@ export class City {
   }
 
   generateBridges(rng) {
-    const spans = [[0, 0.07], [0, 0.2], [0, 0.36], [1, 0.12]];
-    for (const [ri, t] of spans) {
+    // [river, position, deck height]: road bridges built high over the river, so that as the water rises
+    // each one becomes a different squeeze (see levels.js for the water at each level)
+    const spans = [[0, 0.07, 12.5], [0, 0.2, 11.0], [0, 0.36, 12.0], [1, 0.12, 11.3]];
+    for (const [ri, t, deck] of spans) {
       const r = RIVERS[ri], i = Math.floor(t * (r.pts.length - 2)), a = r.pts[i], b = r.pts[i + 1];
       const dx = b.x - a.x, dz = b.z - a.z, l = Math.hypot(dx, dz);
       const tx = dx / l, tz = dz / l; // river tangent
       const w = r.w0 + (r.w1 - r.w0) * t, span = w + 60, ang = Math.atan2(tx, tz); // deck runs across the river
       const nx = -tz, nz = tx;
       const bank = Math.max(groundHeight(a.x + nx * span / 2, a.z + nz * span / 2), groundHeight(a.x - nx * span / 2, a.z - nz * span / 2));
-      const top = Math.max(bank + 1, 9) + rand(rng, 0, 2), bottom = top - 1.4;
+      const top = Math.max(bank + 1, deck) + rand(rng, 0, 0.3), bottom = top - 1.4;
       // deck: local x along the river (narrow), local z across it (long)
       const bang = Math.atan2(nx, nz);
       this.obox(this.plain, a.x, a.z, 4.5, span / 2, bang, bottom, top, 0x77756f);
@@ -657,9 +659,11 @@ export class City {
     return t;
   }
   /** Circle vs colliders whose top exceeds minTop; calls fn(nx, nz, penetration, collider). */
-  circleContacts(x, z, r, minTop, fn) {
+  circleContacts(x, z, r, minTop, fn, airTop) {
     this.forEachNear(x, z, r, (c) => {
-      if (c.top <= minTop || !this.active(c)) return;
+      if (c.top <= minTop) return;
+      // bridge decks: with the boat's height known, only what reaches the underside hits
+      if (c.bottom !== undefined) { if (airTop !== undefined ? airTop <= c.bottom : !this.active(c)) return; }
       const [lx, lz] = this.local(c, x, z);
       const px = clamp(lx, -c.hx, c.hx), pz = clamp(lz, -c.hz, c.hz);
       let dx = lx - px, dz = lz - pz; const d2 = dx * dx + dz * dz;

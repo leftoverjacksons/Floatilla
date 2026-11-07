@@ -1,16 +1,14 @@
 import * as THREE from 'three';
 import { clamp, angleDiff, damp } from './util.js';
 import { KINDS, MODULES } from './boat.js';
+import { crewTrait } from './crew.js';
 
 export const RESOURCES = ['wood', 'scrap', 'cloth', 'parts', 'fuel', 'food', 'water'];
 export const RES_LABEL = { wood: 'Wood', scrap: 'Scrap', cloth: 'Cloth', parts: 'Parts', fuel: 'Fuel', food: 'Food', water: 'Water' };
 
 export const RECIPES = [
   { id: 'patch', label: 'Patch Hull', cost: { wood: 4, scrap: 2 }, desc: 'Restore 20 hull integrity now. Bigger hulls need more material.' },
-  ...Object.keys(MODULES).map((m) => ({ id: m, module: m, label: MODULES[m].label, desc: MODULES[m].desc, cost: MODULE_COST(m) })),
-  { id: 'lengthen', label: 'Lengthen Hull +1.5 m', cost: { wood: 30, scrap: 10 }, desc: 'Rebuilds the hull longer: more slots, berths, cargo, speed. Each extension costs more.' },
-  { id: 'raft', label: 'Build Raft', cost: { wood: 40, cloth: 8 }, newBoat: 'raft', desc: 'New boat for the floatilla. Needs a spare crew member.' },
-  { id: 'rowboat', label: 'Build Rowboat', cost: { wood: 65, scrap: 10 }, newBoat: 'rowboat', desc: 'New boat for the floatilla. Needs a spare crew member.' },
+  ...Object.keys(MODULES).filter((m) => !MODULES[m].found).map((m) => ({ id: m, module: m, label: MODULES[m].label, desc: MODULES[m].desc, cost: MODULE_COST(m) })),
   { id: 'biofuel', label: 'Wood-gas Fuel', cost: { wood: 8 }, gives: { fuel: 3 }, desc: 'Crude gasifier: wood → 3 fuel.' },
   { id: 'boil', label: 'Boil Seawater', cost: { wood: 4 }, gives: { water: 4 }, desc: 'Burn wood to distil 4 water.' },
 ];
@@ -23,7 +21,7 @@ export const RECIPES = [
 export function recipeCost(r, boat) {
   let k = 1;
   if (r.module) k = Math.pow(1.7, boat.count(r.module)) * Math.max(1, Math.sqrt(boat.L / 6));
-  else if (r.id === 'patch') k = Math.max(1, boat.maxHp / 120);
+  else if (r.id === 'patch') k = Math.max(1, boat.maxHp / 120) * (crewTrait(boat, 'carpenter') ? 0.67 : 1);
   else if (r.id === 'lengthen') k = Math.pow(1.5, boat.design.lengthened || 0);
   const out = {};
   for (const [res, n] of Object.entries(r.cost)) out[res] = Math.ceil(n * k);
@@ -33,7 +31,7 @@ function MODULE_COST(m) {
   return {
     sail: { wood: 14, cloth: 18 }, engine: { scrap: 24, parts: 8 }, storage: { wood: 14 }, shelter: { wood: 18, cloth: 10 },
     armor: { scrap: 30 }, outrigger: { wood: 22, scrap: 6 }, net: { cloth: 10, scrap: 6 }, raincatch: { cloth: 6, scrap: 4 },
-    still: { scrap: 10, cloth: 4 }, planter: { wood: 8, food: 6 }, light: { scrap: 10, parts: 4 },
+    still: { scrap: 10, cloth: 4 }, planter: { wood: 8, food: 6 }, light: { scrap: 10, parts: 4 }, tabernacle: { wood: 12, scrap: 10 },
   }[m];
 }
 
@@ -267,7 +265,9 @@ export class Fleet {
     const people = this.people, animals = this.animals;
     const n = people.length;
     // consumption
-    const foodNeed = (n * 1.2 + animals.reduce((a, x) => a + x.def.food * 24, 0)) / 24 * dh;
+    const has = (t) => this.boats.reduce((a, b) => a + crewTrait(b, t), 0);
+    const foodNeed = (n * 1.2 * (has('cook') ? 0.75 : 1) + animals.reduce((a, x) => a + x.def.food * 24, 0)) / 24 * dh;
+    const heal = has('nurse') ? 2 : 1;
     const waterNeed = n * 2.0 / 24 * dh;
     this.starving = this.inv.food < foodNeed; this.thirsty = this.inv.water < waterNeed;
     this.inv.food = Math.max(0, this.inv.food - foodNeed);
@@ -275,7 +275,7 @@ export class Fleet {
     for (const p of people) {
       if (this.thirsty) p.health -= 4 * dh;
       else if (this.starving) p.health -= 2 * dh;
-      else p.health = Math.min(100, p.health + 3 * dh);
+      else p.health = Math.min(100, p.health + 3 * heal * dh);
     }
     // production & repairs
     const moraleK = 0.6 + this.morale / 125;
@@ -290,18 +290,19 @@ export class Fleet {
       for (const a of b.animals) if (a.def.produces) this.give('food', a.def.produces * dh);
       shelters += b.count('shelter');
       if ((tc.repair || 0) > 0 && b.hp < b.maxHp && !b.sinking) {
-        const amount = Math.min(b.maxHp - b.hp, tc.repair * 5 * dh * moraleK);
+        const amount = Math.min(b.maxHp - b.hp, tc.repair * 5 * dh * moraleK * (crewTrait(b, 'carpenter') ? 1.5 : 1));
         const res = this.inv.wood >= this.inv.scrap ? 'wood' : 'scrap';
         const cost = amount * 0.15;
         if (this.inv[res] >= cost) { this.inv[res] -= cost; b.hp += amount; }
       }
     }
     // morale
-    let target = 55 + Math.min(20, animals.length * 4) + Math.min(10, shelters * 3) + Math.min(10, this.boats.length * 2);
+    let target = 58 + Math.min(12, animals.length * 6) + Math.min(10, shelters * 3) + Math.min(12, n * 2);
     if (this.starving) target -= 25; if (this.thirsty) target -= 35;
     if (env.state === 'storm') target -= 12;
     if (env.night > 0.5 && !this.boats.some((b) => b.lightOn)) target -= 4;
-    this.morale += (clamp(target, 5, 100) - this.morale) * clamp(dh * 0.15, 0, 1);
+    const falling = target < this.morale;
+    this.morale += (clamp(target, 5, 100) - this.morale) * clamp(dh * 0.15 * (falling && has('steady') ? 0.5 : 1), 0, 1);
   }
 }
 

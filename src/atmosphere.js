@@ -39,9 +39,9 @@ export class AtmospherePass extends Pass {
     const u = this.uniforms, c = env.cur;
     u.uLevel.value = env.level;
     // sea-level visibility V (2 % contrast) → extinction ρ0 = 3.9 / V
-    u.uDensity.value = 3.9 / Math.max(60, c.fog);
+    u.uDensity.value = 3.9 / Math.max(40, c.fog * env.edgeFog);
     u.uFalloff.value = 1 / Math.max(8, c.fogH);
-    u.uBank.value = c.bank;
+    u.uBank.value = c.bank + (1 - env.edgeFog) * 0.5;
     u.uFogColor.value.copy(env.fogColor);
     const day = env.dayFactor;
     u.uSunColor.value.copy(env.sunColor).multiplyScalar(day * (1 - c.cloud * 0.75) * 0.8);

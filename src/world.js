@@ -1,11 +1,13 @@
 import * as THREE from 'three';
 import { rand, randInt, pick, clamp, mulberry32 } from './util.js';
-import { Boat, randomDesign, KINDS } from './boat.js';
+import { Boat, randomDesign, KINDS, MODULES } from './boat.js';
 import { Person, Animal, ANIMALS } from './people.js';
 import { steerBoat } from './fleet.js';
 import { rectDistance } from './city.js';
 import { DOWNTOWN } from './terrain.js';
 import { angleDiff } from './util.js';
+import { edgeDistance, LEVELS } from './levels.js';
+import { addHistory, earnTrait } from './crew.js';
 
 const PICKUPS = {
   planks: { label: 'Planks', w: 5, give: (r) => ({ wood: randInt(r, 1, 3) }) },
@@ -61,8 +63,11 @@ export class World {
   get ctx() { return this.game.ctx; }
 
   // ---------------- spawning helpers ----------------
+  /** Inside the current level's playable area, with a margin (m). */
+  inLevel(x, z, margin = 0) { return !this.level || edgeDistance(this.level, x, z) < -margin; }
   openWater(x, z, minDepth, clearR) {
     const c = this.ctx;
+    if (!this.inLevel(x, z, 15)) return false;
     if (c.water.level - c.floorMap.floorAt(x, z) < minDepth) return false;
     if (clearR && c.city.pointInBuilding(x, z, clearR)) return false;
     for (const [ox, oz] of [[clearR, 0], [-clearR, 0], [0, clearR], [0, -clearR]])
@@ -151,7 +156,7 @@ export class World {
 
   spawnBoat(kind, x, z, role, opts = {}) {
     const rng = this.rng;
-    const d = randomDesign(rng, kind);
+    const d = opts.design || randomDesign(rng, kind);
     const modules = opts.modules || [];
     const b = new Boat(d, { x, z, heading: opts.heading ?? rand(rng, 0, Math.PI * 2), role, modules, hpFrac: opts.hpFrac, flagColor: role === 'raider' ? 0x111111 : role === 'npc' ? 0xf0f0f0 : 0x9a9a9a });
     b.y = this.ctx.water.heightAt(x, z);
@@ -173,27 +178,28 @@ export class World {
    * Boats left behind in the harbour: tied up alongside the piers and swinging at anchor off the town.
    * They stay put until the flood or a storm tears them loose; then they drift and can be claimed.
    */
-  populateHarbour() {
+  populateHarbour(max = Infinity) {
     const c = this.ctx.city, rng = this.rng, level = this.ctx.water.level;
+    let count = 0;
     const deep = (x, z, b) => level - this.ctx.floorMap.floorAt(x, z) > b.design.draft + 0.4 && !c.pointInBuilding(x, z, b.B * 0.5 + 0.3);
     const PIER_KINDS = ['sailboat', 'sailboat', 'fishing', 'yacht', 'rowboat', 'skiff', 'houseboat', 'fishing'];
     for (const p of c.colliders) {
-      if (p.kind !== 'pier') continue;
+      if (p.kind !== 'pier' || !this.inLevel(p.cx, p.cz, 30)) continue;
       for (const side of [1, -1]) {
-        if (rng() > 0.35) continue;
+        if (rng() > 0.35 || count >= max) continue;
         const b = this.spawnBoat(pick(rng, PIER_KINDS), p.cx, p.cz, 'moored', { hpFrac: rand(rng, 0.5, 0.9) });
         // along the pier (local z toward the sea end), off one side
         const s = rand(rng, -0.05, 0.3) * p.hz * 2, off = p.hx + b.B / 2 + 0.7;
         const x = p.cx + p.sin * s + p.cos * side * off, z = p.cz + p.cos * s - p.sin * side * off;
         if (!deep(x, z, b)) { this.removeBoat(b); continue; }
         const h = Math.atan2(p.sin, p.cos) + (rng() < 0.5 ? 0 : Math.PI);
-        b.x = x; b.z = z; b.heading = h; b.mooring = { x, z, h, pier: p };
+        b.x = x; b.z = z; b.heading = h; b.mooring = { x, z, h, pier: p }; count++;
       }
     }
     // at anchor off the waterfront
     const ANCHOR_KINDS = ['sailboat', 'sailboat', 'yacht', 'fishing', 'schooner', 'houseboat', 'tug', 'barge'];
     let placed = 0;
-    for (let i = 0; i < 300 && placed < 8; i++) {
+    for (let i = 0; i < 300 && placed < Math.min(8, max / 3); i++) {
       const a = rng() * Math.PI * 2, r = rand(rng, 120, 900);
       const x = DOWNTOWN.x + Math.cos(a) * r * 1.2, z = DOWNTOWN.z + 420 + Math.sin(a) * r * 0.6;
       if (this.boats.some((o) => Math.hypot(o.x - x, o.z - z) < 40)) continue;
@@ -203,6 +209,87 @@ export class World {
       b.mooring = { x, z, h: b.heading, pier: null };
       placed++;
     }
+  }
+
+  /**
+   * Everything a level starts with, placed once from the run's seed: boats lying at anchor or tied up
+   * (each carrying some gear), people on the roofs at the waterline, and rooftop caches. Nothing of
+   * this kind appears later; a level is a place to search, not a stream of spawns.
+   */
+  populateLevel(level, seed) {
+    this.level = level; this.levelMode = true;
+    const rng = (this.rng = mulberry32(seed));
+    const c = this.ctx.city, water = this.ctx.water.level, start = level.start;
+    const farFromStart = (x, z, r) => Math.hypot(x - start.x, z - start.z) > r;
+    // where to look: random points spread along the level's capsules
+    const tot = level.region.reduce((a, q) => a + Math.hypot(q[2] - q[0], q[3] - q[1]) + q[4], 0);
+    const regionPoint = () => {
+      let r = rng() * tot;
+      for (const [ax, az, bx, bz, rad] of level.region) {
+        r -= Math.hypot(bx - ax, bz - az) + rad;
+        if (r > 0) continue;
+        const u = rng(), a = rng() * Math.PI * 2, d = Math.sqrt(rng()) * rad;
+        return { x: ax + (bx - ax) * u + Math.cos(a) * d, z: az + (bz - az) * u + Math.sin(a) * d };
+      }
+      return { x: start.x, z: start.z };
+    };
+    const weighted = (pairs) => { const t = pairs.reduce((a, p) => a + p[1], 0); let r = rng() * t; for (const [k, w] of pairs) if ((r -= w) <= 0) return k; return pairs[0][0]; };
+
+    // boats, with gear
+    if (level.harbour) this.populateHarbour(6);
+    const placed = this.boats.filter((b) => b.role === 'moored').map((b) => ({ x: b.x, z: b.z }));
+    for (const b of this.boats) if (b.role === 'moored') this.fitGear(b, level.gear);
+    for (let i = 0, n = 0; i < 400 && n < level.boats.n; i++) {
+      const kind = weighted(level.boats.kinds), K = KINDS[kind];
+      const p = regionPoint();
+      if (!farFromStart(p.x, p.z, 140) || placed.some((q) => Math.hypot(q.x - p.x, q.z - p.z) < 70)) continue;
+      if (!this.openWater(p.x, p.z, K.draft[1] + 0.8, K.L[1] * 0.6 + 3)) continue;
+      const b = this.spawnBoat(kind, p.x, p.z, 'moored', { hpFrac: rand(rng, 0.35, 0.9) });
+      b.mooring = { x: p.x, z: p.z, h: b.heading, pier: null };
+      this.fitGear(b, level.gear);
+      placed.push(p); n++;
+    }
+    // survivors and caches on roofs the water has reached
+    const roofs = [];
+    for (const k of c.colliders) {
+      if (k.used || !ROOF_KINDS.has(k.kind)) continue;
+      const t = k.roof.top;
+      if (t < water + 0.6 || t > water + 10) continue;
+      if (k.base !== undefined && k.base > water + 0.4) continue;
+      const x = (k.roof.minx + k.roof.maxx) / 2, z = (k.roof.minz + k.roof.maxz) / 2;
+      if (!this.inLevel(x, z, 25) || !farFromStart(x, z, 160)) continue;
+      roofs.push({ k, x, z });
+    }
+    const taken = [];
+    const pickRoof = () => {
+      for (let i = 0; i < 60 && roofs.length; i++) {
+        const j = Math.floor(rng() * roofs.length), r = roofs[j];
+        if (taken.some((q) => Math.hypot(q.x - r.x, q.z - r.z) < 160)) continue;
+        roofs.splice(j, 1); taken.push(r); return r.k;
+      }
+      return null;
+    };
+    for (let i = 0; i < level.survivors; i++) {
+      const k = pickRoof(); if (!k) break;
+      this.spawnSurvivorGroup(k, { people: rng() < 0.25 ? 2 : 1, animal: rng() < 0.12 ? pick(rng, Object.keys(ANIMALS)) : null });
+    }
+    for (let i = 0; i < level.caches; i++) { const k = pickRoof(); if (k) this.spawnCache(k); }
+    for (let i = 0; i < 10; i++) { const p = regionPoint(); if (this.openWater(p.x, p.z, 0.8, 1.5)) this.spawnPickup(p.x, p.z); }
+    this.rng = mulberry32(seed ^ 0x9e3779b9); // later randomness (flotsam, hails) on its own stream
+  }
+
+  /** Gear found aboard a boat: more, and better, further into the voyage. */
+  fitGear(b, tier) {
+    const rng = this.rng;
+    const pool = [['storage', 3], ['raincatch', 2], ['net', 2], ['light', 1.5], ['sail', 1.2], ['engine', 1.2], ['tabernacle', 0.8 + tier * 0.3], ['sounder', 0.6 + tier * 0.4], ['still', tier > 1 ? 1 : 0.3], ['armor', tier > 1 ? 1 : 0.2], ['outrigger', tier > 1 ? 0.8 : 0.3], ['shelter', 1]];
+    const n = Math.min(4, randInt(rng, 0, 1 + tier));
+    let added = 0;
+    for (let i = 0; i < 12 && added < n; i++) {
+      const t = pool.reduce((a, p) => a + p[1], 0); let r = rng() * t, m = pool[0][0];
+      for (const [k, w] of pool) if ((r -= w) <= 0) { m = k; break; }
+      if (!b.canAdd(m)) { b.modules.push(m); added++; }
+    }
+    if (added) b.rebuild();
   }
 
   /** Hold a moored boat in place; let it go when the water tops its pier or a storm drags the anchor. */
@@ -354,10 +441,10 @@ export class World {
     // survivor groups & caches on roofs near the waterline
     for (let i = this.groups.length - 1; i >= 0; i--) {
       const g = this.groups[i];
-      if (Math.hypot(g.x - pl.x, g.z - pl.z) > 1400) this.removeGroup(g, i, true);
+      if (!this.levelMode && Math.hypot(g.x - pl.x, g.z - pl.z) > 1400) this.removeGroup(g, i, true);
     }
     const roofGroups = this.groups.filter((g) => g.kind === 'roof').length;
-    const wantGroup = roofGroups < 3 && this.groupTimer <= 0, wantCache = this.caches.length < 4 && this.cacheTimer <= 0;
+    const wantGroup = !this.levelMode && roofGroups < 3 && this.groupTimer <= 0, wantCache = !this.levelMode && this.caches.length < 4 && this.cacheTimer <= 0;
     if (wantGroup || wantCache) {
       const cands = [];
       ctx.city.forEachNear(pl.x, pl.z, 1000, (c) => {
@@ -376,13 +463,13 @@ export class World {
         else { this.spawnCache(c); this.cacheTimer = rand(this.rng, 2, 5); }
       }
     }
-    if (this.groups.filter((g) => g.kind === 'float').length < 1 && this.rng() < 0.004) {
+    if (!this.levelMode && this.groups.filter((g) => g.kind === 'float').length < 1 && this.rng() < 0.004) {
       const pt = this.randomWaterPoint(pl.x, pl.z, 300, 700, 2, 3, 6);
       if (pt) this.spawnSurvivorGroup(null, { x: pt.x, z: pt.z });
     }
     for (let i = this.caches.length - 1; i >= 0; i--) {
       const c = this.caches[i];
-      if (Math.hypot(c.x - pl.x, c.z - pl.z) > 1400) { this.scene.remove(c.mesh); c.c.used = false; this.caches.splice(i, 1); }
+      if (!this.levelMode && Math.hypot(c.x - pl.x, c.z - pl.z) > 1400) { this.scene.remove(c.mesh); c.c.used = false; this.caches.splice(i, 1); }
     }
 
     // boats
@@ -390,11 +477,12 @@ export class World {
       if (b.fleet) continue;
       const d = Math.hypot(b.x - pl.x, b.z - pl.z);
       if (b.role === 'moored') continue;
+      if (b.role === 'derelict' && this.levelMode) continue;
       if (d > 1500 || (b.role === 'raider' && b.ai.fleeing && d > 600)) this.removeBoat(b);
     }
     const free = this.boats.filter((b) => !b.fleet);
     const days = env.elapsedDays;
-    if (free.filter((b) => b.role === 'derelict').length < 2 && this.derelictTimer <= 0) {
+    if (!this.levelMode && free.filter((b) => b.role === 'derelict').length < 2 && this.derelictTimer <= 0) {
       this.derelictTimer = rand(this.rng, 6, 14);
       const kind = this.randomDerelictKind(days);
       const K = KINDS[kind];
@@ -408,7 +496,7 @@ export class World {
       }
     }
     // other survivors on the move: most are passing through, a few might throw in with you
-    if (free.filter((b) => b.role === 'npc').length < 3 && this.npcTimer <= 0) {
+    if (free.filter((b) => b.role === 'npc').length < (this.levelMode ? 1 : 3) && this.npcTimer <= 0) {
       this.npcTimer = rand(this.rng, 3, 9);
       const kind = pick(this.rng, ['rowboat', 'skiff', 'sailboat', 'fishing', 'houseboat', 'raft']);
       const pt = this.randomWaterPoint(pl.x, pl.z, 350, 700, KINDS[kind].draft[1] + 1.5, KINDS[kind].L[1] * 0.6 + 2, 6);
@@ -527,9 +615,12 @@ export class World {
       if (b.fleet || b.sinking) continue;
       const d = Math.hypot(b.x - pl.x, b.z - pl.z) - (b.L + pl.L) * 0.5;
       if (d > 8) continue;
-      if (b.role === 'derelict') consider('claim', b, d, `[E] Crew the abandoned ${b.design.label.toLowerCase()}  ·  [X] Salvage it`);
-      else if (b.role === 'moored') consider('claim', b, d, `[E] Cast off and crew the ${b.mooring && b.mooring.pier ? 'tied-up' : 'anchored'} ${b.design.label.toLowerCase()}  ·  [X] Salvage it`);
+      if (b.role === 'derelict' || b.role === 'moored') consider('claim', b, d, `[E] Go aboard the ${b.design.label.toLowerCase()} ${b.name}: gear, swap boats  ·  [X] Strip her`);
       else if (b.role === 'npc') consider('hail', b, d, `[E] Hail the ${b.name} (${b.crew.length} aboard)`);
+    }
+    for (const e of this.game.exits || []) {
+      const d = Math.hypot(e.x - pl.x, e.z - pl.z) - pl.L * 0.5;
+      if (d < 35) consider('exit', e, d - 30, `[E] ${e.label}: leave for ${e.to === 'end' ? 'the end of the voyage' : LEVELS[e.to].name}`);
     }
     if (!best && this.game.landmarks) best = this.game.landmarks.findInteraction(pl);
     return best;
@@ -550,8 +641,16 @@ export class World {
     if (it.kind === 'rescue') {
       const g = it.target;
       const totalFree = fleet.boats.reduce((a, b) => a + Math.max(0, b.freeBerths), 0);
-      if (g.people.length && totalFree < g.people.length) { ui.toast(`No room: ${totalFree} free berths in the floatilla. Build shelters or claim boats.`, 'warn'); return; }
+      if (g.people.length && totalFree < g.people.length) { ui.toast(`No room: ${totalFree} free berth${totalFree === 1 ? '' : 's'} aboard. Fit a shelter in the workshop, or find a bigger boat.`, 'warn'); return; }
+      const where = this.level ? this.level.name.replace(/^The /, 'the ') : 'the flood';
+      const fromWater = g.state === 'swim';
+      if (fromWater && g.people.length) {
+        const hand = pl.crew.filter((q) => !q.isPlayer);
+        const h = hand.length ? pick(this.rng, hand) : null;
+        if (h && earnTrait(h, 'rescuer', `Hauled ${g.people[0].name} out of the water in ${where}.`)) ui.toast(`${h.name} is now a Rescuer.`, 'good');
+      }
       for (const p of g.people) {
+        addHistory(p, fromWater ? `Pulled out of the water in ${where} by the ${pl.name}.` : `Taken off a roof in ${where} by the ${pl.name}.`);
         const b = pl.freeBerths > 0 ? pl : fleet.boats.find((x) => x.freeBerths > 0);
         const wp = p.mesh.position.clone();
         this.scene.remove(p.mesh);
@@ -565,7 +664,8 @@ export class World {
       }
       fleet.stats.rescued += g.people.length;
       fleet.morale = Math.min(100, fleet.morale + 4 * g.people.length + 3 * g.animals.length);
-      ui.toast(g.people.length ? `Rescued ${g.people.map((p) => p.name).join(', ')}${g.animals.length ? ` and a ${g.animals[0].type}` : ''}!` : `Rescued a ${g.animals[0].type}!`, 'good');
+      if (pl.crew.some((q) => q.card && q.card.traits.includes('rescuer'))) fleet.morale = Math.min(100, fleet.morale + 3);
+      ui.toast(g.people.length ? `Rescued ${g.people.map((p) => `${p.name} (${p.card.roleName})`).join(', ')}${g.animals.length ? ` and a ${g.animals[0].type}` : ''}!` : `Rescued a ${g.animals[0].type}!`, 'good');
       this.game.audio.chime();
       if (g.landmark) g.landmark.rescued = true;
       g.people = []; g.animals = [];
@@ -579,16 +679,9 @@ export class World {
     } else if (it.kind === 'claim') {
       const b = it.target;
       if (salvage) return this.salvage(b);
-      const donor = this.spareCrew();
-      if (!donor) { ui.toast('No spare crew to man her. Rescue more survivors — or press X to salvage.', 'warn'); return; }
-      b.mooring = null; b.anchored = false;
-      const wp = donor.mesh.getWorldPosition(new THREE.Vector3());
-      const from = donor.boat; from.removePerson(donor);
-      b.addPerson(donor); this.jump(donor, b, wp);
-      for (const a of b.animals) void a;
-      fleet.add(b); fleet.stats.boatsJoined++;
-      ui.toast(`${donor.name} takes the helm of the ${b.name} (${b.design.label}). Your floatilla grows to ${fleet.boats.length}.`, 'good');
-      this.game.audio.chime();
+      ui.openInspect(b);
+    } else if (it.kind === 'exit') {
+      ui.openExit(it.target);
     } else if (it.kind === 'hail' && it.target.ai && it.target.ai.joinable === false) {
       const b = it.target;
       const LINES = ['"We\'re making for the hills — good luck out here!"', '"Seen people waving from the roofs east of the river."', '"The radio says the water won\'t stop till it\'s over the towers."', '"Watch yourselves at night. There are boats out here taking what they want."', '"Fuel\'s the thing. Find a marina before it\'s under."'];
@@ -600,15 +693,16 @@ export class World {
       } else ui.toast(pick(this.rng, LINES), 'info');
       this.game.audio.blip(520);
     } else if (it.kind === 'hail') {
-      const b = it.target;
-      const ask = b.crew.length * 4;
-      if (fleet.inv.food >= ask || fleet.morale > 80) {
-        fleet.inv.food = Math.max(0, fleet.inv.food - ask);
-        fleet.add(b); fleet.stats.boatsJoined++;
-        fleet.stats.rescued += b.crew.length;
-        ui.toast(`The ${b.name} joins the floatilla! (shared ${ask} food)`, 'good');
-        this.game.audio.chime();
-      } else ui.toast(`"We'd join you, but you can't feed us." They need ${ask} food.`, 'warn');
+      // one of them would rather come with you
+      const b = it.target, p = b.crew[b.crew.length - 1];
+      if (!p) return;
+      if (pl.freeBerths <= 0) { ui.toast(`"${p.name} would come with you, if you had a berth for them."`, 'warn'); return; }
+      const wp = p.mesh.getWorldPosition(new THREE.Vector3());
+      b.removePerson(p); pl.addPerson(p); this.jump(p, pl, wp);
+      addHistory(p, `Left the ${b.name} to sail with you.`);
+      b.ai.joinable = false; fleet.stats.rescued++;
+      ui.toast(`${p.name} (${p.card.roleName}) climbs across from the ${b.name} to join your crew.`, 'good');
+      this.game.audio.chime();
     }
   }
 
