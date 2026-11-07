@@ -528,6 +528,7 @@ export class World {
       const d = Math.hypot(b.x - pl.x, b.z - pl.z) - (b.L + pl.L) * 0.5;
       if (d > 8) continue;
       if (b.role === 'derelict') consider('claim', b, d, `[E] Crew the abandoned ${b.design.label.toLowerCase()}  ·  [X] Salvage it`);
+      else if (b.role === 'moored') consider('claim', b, d, `[E] Cast off and crew the ${b.mooring && b.mooring.pier ? 'tied-up' : 'anchored'} ${b.design.label.toLowerCase()}  ·  [X] Salvage it`);
       else if (b.role === 'npc') consider('hail', b, d, `[E] Hail the ${b.name} (${b.crew.length} aboard)`);
     }
     if (!best && this.game.landmarks) best = this.game.landmarks.findInteraction(pl);
@@ -580,6 +581,7 @@ export class World {
       if (salvage) return this.salvage(b);
       const donor = this.spareCrew();
       if (!donor) { ui.toast('No spare crew to man her. Rescue more survivors — or press X to salvage.', 'warn'); return; }
+      b.mooring = null; b.anchored = false;
       const wp = donor.mesh.getWorldPosition(new THREE.Vector3());
       const from = donor.boat; from.removePerson(donor);
       b.addPerson(donor); this.jump(donor, b, wp);
