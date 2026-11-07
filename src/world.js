@@ -601,16 +601,30 @@ export class World {
       }
       if (best) return best;
     }
-    const consider = (kind, target, d, label) => { if (d < bd) { bd = d; best = { kind, target, label }; } };
+    // what comes first when several things are in reach: people, then supplies, then boats and exits
+    const PRI = { rescue: 0, loot: 1000, hail: 2000, claim: 2000, exit: 3000 };
+    const consider = (kind, target, d, label) => { const k = d + PRI[kind]; if (k < bd) { bd = k; best = { kind, target, label }; } };
+    // gap between the hull (bow, middle, stern) and a building's walls
+    const fx = Math.sin(pl.heading), fz = Math.cos(pl.heading);
+    const reach = (c) => {
+      let m = Infinity;
+      for (const t of [-0.42, 0, 0.42]) {
+        const [lx, lz] = this.ctx.city.local(c, pl.x + fx * pl.L * t, pl.z + fz * pl.L * t);
+        m = Math.min(m, Math.hypot(Math.max(Math.abs(lx) - c.hx, 0), Math.max(Math.abs(lz) - c.hz, 0)));
+      }
+      return m - pl.B * 0.5;
+    };
     for (const g of this.groups) {
-      const d = g.state === 'roof' ? rectDistance(g.c.roof, pl.x, pl.z) - pl.B * 0.5 : Math.hypot(g.x - pl.x, g.z - pl.z) - pl.L * 0.5;
+      // on a long pier or quay, they wait at one spot; on a building, anywhere along its walls will do
+      const along = g.c && (g.c.kind === 'pier' || g.c.kind === 'quay');
+      const d = g.state === 'roof' ? Math.min(along ? Infinity : reach(g.c), rectDistance(g.c.roof, pl.x, pl.z) - pl.B * 0.5) : Math.hypot(g.x - pl.x, g.z - pl.z) - pl.L * 0.5;
       if (d < 6) {
         const who = [g.people.length ? `${g.people.length} survivor${g.people.length > 1 ? 's' : ''}` : null, ...g.animals.map((a) => `a ${a.type}`)].filter(Boolean).join(' and ');
         consider('rescue', g, d, `[E] Rescue ${who}`);
       }
     }
     for (const c of this.caches) {
-      const d = rectDistance(c.c.roof, pl.x, pl.z) - pl.B * 0.5;
+      const d = Math.min(reach(c.c), rectDistance(c.c.roof, pl.x, pl.z) - pl.B * 0.5);
       if (d < 6) consider('loot', c, d, '[E] Haul rooftop supplies aboard');
     }
     for (const b of this.boats) {
@@ -622,7 +636,7 @@ export class World {
     }
     for (const e of this.game.exits || []) {
       const d = Math.hypot(e.x - pl.x, e.z - pl.z) - pl.L * 0.5;
-      if (d < 35) consider('exit', e, d - 30, `[E] ${e.label}: leave for ${e.to === 'end' ? 'the end of the voyage' : LEVELS[e.to].name}`);
+      if (d < 35) consider('exit', e, d, `[E] ${e.label}: leave for ${e.to === 'end' ? 'the end of the voyage' : LEVELS[e.to].name}`);
     }
     if (!best && this.game.landmarks) best = this.game.landmarks.findInteraction(pl);
     return best;

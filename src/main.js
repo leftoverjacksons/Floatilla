@@ -110,9 +110,12 @@ class Game {
     this.setupLevel();
     this.world.populateLevel(this.level, this.levelSeed);
     this.buildExits();
-    this.searchlight = new THREE.SpotLight(0xfff4dd, 0, 140, 0.32, 0.4, 1.2);
+    this.searchlight = new THREE.SpotLight(0xfff4dd, 0, 320, 0.28, 0.45, 1.1);
     this.searchlight.castShadow = false;
     this.scene.add(this.searchlight, this.searchlight.target);
+    // the player's boat: a warm light over the deck and cabin after dark
+    this.deckLight = new THREE.PointLight(0xffcf94, 0, 18, 2);
+    this.scene.add(this.deckLight);
 
     this.bindInput();
     this.clock = new THREE.Clock();
@@ -686,6 +689,30 @@ class Game {
     }
   }
 
+  /** Deck light and waterline lamps of the player's boat, and the searchlight on the water. */
+  boatLamps(pl) {
+    const u = this.water.uniforms;
+    const k = pl ? pl.lampK || 0 : 0;
+    if (!pl || k <= 0.01) { this.deckLight.intensity = 0; u.uLampCol.value.setRGB(0, 0, 0); }
+    else {
+      this.deckLight.position.copy(pl.root.localToWorld(new THREE.Vector3(0, pl.deckY + 2.4, -pl.L * 0.12)));
+      this.deckLight.intensity = 60 * k;
+      const fx = Math.sin(pl.heading), fz = Math.cos(pl.heading), px = Math.cos(pl.heading), pz = -Math.sin(pl.heading);
+      const y = this.water.level + 0.9, a = pl.L * 0.5 + 0.6, b = pl.B * 0.5 + 0.6;
+      const P = u.uLampPos.value;
+      P[0].set(pl.x + fx * a, y, pl.z + fz * a); P[1].set(pl.x - fx * a, y, pl.z - fz * a);
+      P[2].set(pl.x + px * b, y, pl.z + pz * b); P[3].set(pl.x - px * b, y, pl.z - pz * b);
+      u.uLampCol.value.setRGB(1.0, 0.78, 0.5).multiplyScalar(1.2 * k);
+      u.uLampR.value = 10 + pl.L * 0.6;
+    }
+    if (this.searchlight.intensity > 0) {
+      u.uSpotPos.value.copy(this.searchlight.position);
+      u.uSpotDir.value.copy(this.searchlight.target.position).sub(this.searchlight.position).normalize();
+      u.uSpotCos.value = Math.cos(this.searchlight.angle);
+      u.uSpotCol.value.setRGB(1.0, 0.96, 0.88).multiplyScalar(5);
+    } else u.uSpotCol.value.setRGB(0, 0, 0);
+  }
+
   frame() {
     requestAnimationFrame(this.frame);
     const rawDt = Math.min(this.clock.getDelta(), 0.05);
@@ -769,8 +796,9 @@ class Game {
       const p = pl.lightHead.localToWorld(new THREE.Vector3(0, 1.7, 0.3));
       this.searchlight.position.copy(p);
       this.searchlight.target.position.copy(pl.lightHead.localToWorld(new THREE.Vector3(0, -1, 40)));
-      this.searchlight.intensity = 400;
+      this.searchlight.intensity = 6000;
     } else this.searchlight.intensity = 0;
+    this.boatLamps(pl);
 
     if (pl) this.audio.update({ wind: env.windSpeed, rain: env.rainAmt, sea: this.water.sea, speed: pl.speed, engine: pl.engineOn, throttle: pl.throttle, power: pl.enginePower });
     if (this.started) this.ui.update(rawDt);

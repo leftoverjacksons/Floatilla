@@ -244,6 +244,7 @@ function makeSailGeometry() {
 const SAIL_GEO = makeSailGeometry();
 
 /** Mast + boom + triangular sail. Sail local frame: unit bulge in x, height in y, foot along -z. */
+const NAV_GEO = new THREE.SphereGeometry(0.09, 8, 6);
 function makeRig(parent, z, h, foot, cloth, deckY) {
   const g = new THREE.Group(); g.position.set(0, deckY, z); parent.add(g);
   cyl(g, 0xb8b8b0, 0.06 + h * 0.003, h, 0, h / 2, 0, { metalness: 0.5 });
@@ -478,6 +479,14 @@ export class Boat {
     lantern.position.y = 1.65; flagPole.add(lantern); this.lanterns.push(lantern);
 
     this.flag.userData.noWalk = true; lantern.userData.noWalk = true;
+    // sidelights: red to port (local +x), green to starboard, on the bow quarters
+    this.navLights = [];
+    for (const [side, c] of [[1, 0xff2a14], [-1, 0x22ff55]]) {
+      const z = L * 0.3, da = this.deckAt(z);
+      const m = new THREE.Mesh(NAV_GEO, new THREE.MeshStandardMaterial({ color: 0x111111, emissive: c, emissiveIntensity: 0 }));
+      m.position.set(side * Math.max(0.3, da.w - 0.05), (da.y ?? this.deckY) + 0.3, z);
+      m.userData.noWalk = true; body.add(m); this.navLights.push(m);
+    }
     this.buildModules(body, zone);
     this.computeStations(zone);
     this.computeWalkable(body);
@@ -1115,7 +1124,11 @@ export class Boat {
       this.flag.parent.rotation.y = windYaw - Math.PI / 2;
       this.flag.rotation.y = Math.sin(performance.now() * 0.012 + this.design.seed) * 0.25;
     }
-    for (const l of this.lanterns) l.material.emissiveIntensity = night * 3;
+    // lamps burn after dark and in dark weather, on boats with someone aboard
+    const dark = Math.min(1, Math.max(night, (0.65 - (ctx.env.lightLevel ?? 1)) * 2.5));
+    this.lampK = this.crew.length ? dark : 0;
+    for (const l of this.lanterns) l.material.emissiveIntensity = this.lampK * 3;
+    for (const l of this.navLights) l.material.emissiveIntensity = this.lampK * 6;
     if (this.lens) this.lens.material.emissiveIntensity = this.lightOn ? 4 : 0;
   }
 

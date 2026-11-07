@@ -45,6 +45,12 @@ export class Water {
       uRing: { value: 0 },
       uRefl: { value: null }, uReflMatrix: { value: new THREE.Matrix4() }, uReflOn: { value: 0 },
       uWake: { value: null }, uWakeOrigin: { value: new THREE.Vector2() }, uWakeOn: { value: 0 },
+      // lamps on the player's boat (just above the waterline) and the searchlight, which three.js
+      // lights would not reach because the water has its own lighting
+      uLampPos: { value: [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()] },
+      uLampCol: { value: new THREE.Color(0, 0, 0) }, uLampR: { value: 12 },
+      uSpotPos: { value: new THREE.Vector3() }, uSpotDir: { value: new THREE.Vector3(0, -1, 0) },
+      uSpotCol: { value: new THREE.Color(0, 0, 0) }, uSpotCos: { value: 0.95 }, uSpotR: { value: 260 },
       ...THREE.UniformsLib.fog,
     };
     const matNear = new THREE.ShaderMaterial({ uniforms: this.uniforms, vertexShader: VERT, fragmentShader: FRAG, transparent: true, fog: true, depthWrite: true });
@@ -272,6 +278,16 @@ uniform float uSea, uHs, uSunInt, uLight, uRain, uFlash, uRing;
 uniform vec2 uWind;
 uniform vec3 uSunDir, uSunColor, uSkyColor, uHorizon, uDeep, uShallow, uMurk, uSSS;
 uniform sampler2D uRefl; uniform mat4 uReflMatrix; uniform float uReflOn;
+uniform vec3 uLampPos[4]; uniform vec3 uLampCol; uniform float uLampR;
+uniform vec3 uSpotPos, uSpotDir, uSpotCol; uniform float uSpotCos, uSpotR;
+// a small light over the water: the body colour lit from above, foam catching it, and a glint
+vec3 lampOn(vec3 wp, vec3 lp, vec3 lc, float range, vec3 n, vec3 V, vec3 wc, float foam){
+  vec3 L = lp - wp; float d = length(L); vec3 l = L / max(d, 1e-3);
+  float att = smoothstep(range, range * 0.15, d) / (1.0 + d * d * 0.08);
+  float diff = max(dot(n, l), 0.0);
+  float spec = pow(max(dot(n, normalize(l + V)), 0.0), 80.0);
+  return lc * att * ((wc * 2.5 + 0.04) * diff + foam * 0.7 * diff + spec * 2.0);
+}
 varying vec3 vWorld; varying vec2 vP0; varying float vAtten; varying float vDepth; varying float vHeight;
 #include <common>
 #include <fog_pars_fragment>
@@ -365,6 +381,15 @@ void main(){
   foam *= 1.0 - smoothstep(600.0, 1400.0, camDist) * 0.7;
   col = mix(col, vec3(0.86, 0.9, 0.9) * (0.35 + 0.65 * uLight), foam * 0.85);
   col += vec3(0.6, 0.65, 0.8) * uFlash;
+  if (uLampCol.r + uLampCol.g > 0.001) for (int i = 0; i < 4; i++) col += lampOn(vWorld, uLampPos[i], uLampCol, uLampR, n, V, wc, foam);
+  if (uSpotCol.r > 0.001) {
+    vec3 toP = vWorld - uSpotPos; float d = length(toP);
+    float cone = smoothstep(uSpotCos, mix(uSpotCos, 1.0, 0.35), dot(toP / max(d, 1e-3), uSpotDir));
+    float att = cone * smoothstep(uSpotR, uSpotR * 0.3, d) / (1.0 + d * d * 0.0012);
+    vec3 l = -toP / max(d, 1e-3);
+    float spec = pow(max(dot(n, normalize(l + V)), 0.0), 120.0);
+    col += uSpotCol * att * ((wc * 2.5 + 0.05) * max(dot(n, l), 0.0) + foam * 0.9 + spec * 3.0);
+  }
 
   float alpha = mix(0.72, 0.97, smoothstep(0.0, 9.0, vDepth));
   alpha = clamp(max(alpha, fres) + foam, 0.0, 1.0);
