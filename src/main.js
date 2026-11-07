@@ -461,7 +461,7 @@ class Game {
     for (const p of [...old.crew]) { const wp = p.mesh.getWorldPosition(new THREE.Vector3()); old.removePerson(p); b.addPerson(p); if (!p.isPlayer) this.world.jump(p, b, wp); }
     for (const a of [...old.animals]) { old.removeAnimal(a); b.addAnimal(a); }
     f.boats = [b]; b.fleet = f; f.player = b;
-    b.role = 'player'; b.mooring = null; b.anchored = false; b.sailsUp = false;
+    b.role = 'player'; b.mooring = null; b.anchored = false; b.sailsUp = false; b.root.visible = true;
     old.fleet = null; old.role = 'moored'; old.throttle = 0; old.rudder = 0; old.sailsUp = false; old.lightOn = false;
     old.mooring = { x: old.x, z: old.z, h: old.heading, pier: null };
     f.trail = [{ x: b.x, z: b.z }];

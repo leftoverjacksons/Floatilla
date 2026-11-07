@@ -297,10 +297,11 @@ export class World {
     const m = b.mooring, env = ctx.env;
     b.throttle = 0; b.rudder = 0; b.anchored = true;
     let loose = false;
-    if (m.pier && ctx.water.level > m.pier.top + 0.35) loose = true;
-    if (!m.pier && env.cur.wind > 15 && this.rng() < dt / 900) loose = true;
+    // in a level the water holds steady, so lines and anchors hold too
+    if (!this.levelMode && m.pier && ctx.water.level > m.pier.top + 0.35) loose = true;
+    if (!this.levelMode && !m.pier && env.cur.wind > 15 && this.rng() < dt / 900) loose = true;
     if (loose) {
-      b.role = 'derelict'; b.mooring = null; b.anchored = false;
+      b.role = 'derelict'; b.mooring = null; b.anchored = false; b.root.visible = true;
       const pl = this.game.fleet.player;
       if (pl && Math.hypot(b.x - pl.x, b.z - pl.z) < 700) this.game.ui.toast(`A ${b.design.label.toLowerCase()} has torn free of its ${m.pier ? 'mooring' : 'anchor'} and is drifting.`, 'info');
       return;
@@ -400,6 +401,7 @@ export class World {
         if (dm > 450 && b.settled) continue;
         b.update(dt, ctx); this.moorAI(b, dt, ctx); continue;
       }
+      b.root.visible = true; // only moored boats are hidden at a distance
       if (b.role === 'npc') this.npcAI(b, dt, ctx);
       else if (b.role === 'raider') this.raiderAI(b, dt, ctx);
       else { b.throttle = 0; b.rudder = 0; }
